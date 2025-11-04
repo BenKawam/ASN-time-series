@@ -269,7 +269,11 @@ dyads_vec <- sample(1:849, 10, replace = FALSE)
 ```
 
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 6
+#| fig-height: 9
 # naive estimates holding times
 naive_estimates <- tibble(
   dyad = d$D_dyad,

@@ -1,5 +1,5 @@
 ---
-title: "Mixture test"
+title: "Extended model (simulations)"
 format:
   html: 
     self-contained: true
@@ -969,7 +969,7 @@ hist_plot(
 
 ### Transitions
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 obs_tr <- tibble(
 dyad = d_1[[1]]$C_dyad,
 s_from = d_1[[1]]$C_s_from
@@ -1089,6 +1089,8 @@ avgs %>% saveRDS("./sim_data/02/param_avg.rds")
 ```
 
 ```{r}
+#| fig-width: 7
+#| fig-height: 4.5
 avgs <- readRDS("./sim_data/02/param_avg.rds")
 p1 <- post_1 %>%
   select(`avg_s1[1]`, iter) %>%
@@ -1226,7 +1228,9 @@ p6 + p7 + p8 + p9 + p10 +
 ```
 
 
-```{r}
+```{r, warning=FALSE}
+#| fig-width: 7
+#| fig-height: 3
 avgs <- readRDS("./sim_data/02/param_avg.rds")
 p1 <- post_1 %>%
   select(`ATE_s1[1]`, iter) %>%
