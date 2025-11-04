@@ -1,4 +1,6 @@
 .Rproj.user
 .Rhistory
 .RData
+.RDataTmp
 .Ruserdata
+fitted_models/

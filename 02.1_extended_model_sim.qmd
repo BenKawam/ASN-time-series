@@ -1,0 +1,1319 @@
+---
+title: "Mixture test"
+format:
+  html: 
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We load a few packages and functions."
+# Packages
+  library(tidyverse)
+  library(tidybayes)
+  library(rethinking)
+  library(patchwork)
+  library(cmdstanr)
+  library(GGally)
+  library(posterior)
+  library(future)
+  library(parallel)
+
+# Functions
+  post_plot <- readRDS("./functions/post_plot.rds")
+  post_plot_2 <- readRDS("./functions/post_plot_2.rds")
+  plot_interval <- readRDS("./functions/plot_interval.rds")
+  hist_plot <- readRDS("./functions/hist_plot.rds")
+  binom_pmf <- readRDS("./functions/binom_pmf.rds")
+  hist_plot_simple <- readRDS("./functions/hist_plot_simple.rds")
+```
+
+# Generative model
+
+## Fixed parameters
+
+The intercepts $\alpha$.
+
+```{r}
+ a <- tibble(
+   "1" = c(log(3.8 * 12 * 60), log(3.6 * 12 * 60), log(3.5 * 12 * 60), log(3.2 * 12 * 60)),
+   "2" = c(log(4.2), log(4.5), log(4.8), log(5)),
+   "gr" = c(log(4.8), log(5), log(5.2), log(5.8)),
+   "1_gr" = c(-0.65, -0.7, -0.6, 0.65),
+   "2_gr" = c(-0.8, -1, -0.9, -0.85),
+   "gr_1" = c(1.9, 2, 2.1, 1.85),
+   "gr_2" = c(1.4, 1.6, 1.8, 1.9)
+ )
+```
+
+
+The effects of sex, $\mathbf{\Omega}^{1}$, $\mathbf{\Omega}^{2}$, and $\mathbf{\Omega}^{\text{gr}}$.
+
+```{r}
+# State 1
+Om_1 <- matrix(c(0.275, 0.075, 0.075, -0.425), nrow = 2, byrow = FALSE)
+
+# State 2
+Om_2 <- matrix(c(-0.4, 0, 0, 0.4), nrow = 2, byrow = FALSE)
+
+# State 3 or 4
+Om_gr <- matrix(c(-0.325, 0.175, -0.225, 0.425), nrow = 2, byrow = FALSE)
+
+# List of Omegas
+sex_effects <- list(Om_1, Om_2, Om_gr)
+```
+
+The effect of $U_{[a]}^{\text{ind}}$ on $\phi$.
+
+```{r}
+b_phi <- tibble(
+  "1" = -0.5,
+  "2" = 0.5,
+  "give_gr" = 0.5,
+  "rec_gr" = 0.5,
+  "1_give_gr" = 0.1,
+  "1_rec_gr" = 0.1, 
+  "2_give_gr" = 0.5,
+  "2_rec_gr" = 0.5,
+  "give_gr_1" = -0.5,
+  "give_gr_2" = -0.5,
+  "rec_gr_1" = -0.5,
+  "rec_gr_2" = -0.5
+)
+```
+
+The effect of $U_{[a, b]}^{\text{dyad}}$ (where $U_{[a, b]}^{\text{dyad}} = U_{[b, a]}^{\text{dyad}}$) on $\tau$.
+
+```{r}
+b_tau <- tibble(
+  "1" = -0.5,
+  "2" = 0.5,
+  "gr" = 0.5,
+  "1_gr" = 0.5,
+  "2_gr" = 0.5,
+  "gr_1" = -0.5,
+  "gr_2" = -0.5
+)
+```
+
+## `stochastic_param`
+
+```{r}
+stochastic_param <- function(
+  N_ind_vec = c(3, 4, 3),
+  N_group = length(N_ind_vec),
+  N_dyad_vec = ((N_ind_vec * N_ind_vec) - N_ind_vec) / 2,
+  alpha = a,
+  Omega = sex_effects,
+  beta_phi = b_phi,
+  beta_tau = b_tau,
+  sigma_U_ind = 0.5,
+  sigma_U_dyad = 0.5,
+  sigma_ups_ind = 0.1,
+  sigma_ups_dyad = 0.1) {
+  
+  params <- list()
+  
+  for (group in 1:N_group) {
+    # Nb of ind and dyads in the group
+    N_ind <- N_ind_vec[group]
+    N_dyad <- N_dyad_vec[group]
+    
+    ## 1. Individual features
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      z = sample(1:2, N_ind, replace = TRUE)
+    )
+    
+    ## 2. all dyads
+    dyads <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      dyad_id = c(1:N_dyad)
+    ) %>%
+      # Add a's attribute
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(z_a = z) %>%
+      
+      # Add b's attribute
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(z_b = z)
+    
+    ## 2. Exogenous variation
+    # U
+    U_ind <- rnorm(N_ind, 0, sigma_U_ind)
+    U_dyad <- rnorm(N_dyad, 0, sigma_U_dyad)
+    
+    # upsilon individual
+    ups_ind <- tibble(
+      "1" = rnorm(N_ind, 0, sigma_ups_ind),
+      "2" = rnorm(N_ind, 0, sigma_ups_ind),
+      "give_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "rec_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "1_give_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "1_rec_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "2_give_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "2_rec_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "give_gr_1" = rnorm(N_ind, 0, sigma_ups_ind),
+      "give_gr_2" = rnorm(N_ind, 0, sigma_ups_ind),
+      "rec_gr_1" = rnorm(N_ind, 0, sigma_ups_ind),
+      "rec_gr_2" = rnorm(N_ind, 0, sigma_ups_ind),
+    )
+    
+    # upsilon dyad
+    ups_dyad <- tibble(
+      "1" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "2" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "1_gr_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "1_gr_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "2_gr_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "2_gr_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_1_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_2_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_1_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_2_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+    )
+    
+    ## 3. phi
+    phi <- tibble(
+      "1" = beta_phi$`1` * U_ind + ups_ind$`1`,
+      "2" = beta_phi$`2` * U_ind + ups_ind$`2`,
+      "give_gr" = beta_phi$`give_gr` * U_ind + ups_ind$`give_gr`,
+      "rec_gr" = beta_phi$`rec_gr` * U_ind + ups_ind$`rec_gr`,
+      "1_give_gr" = beta_phi$`1_give_gr` * U_ind + ups_ind$`1_give_gr`,
+      "1_rec_gr" = beta_phi$`1_rec_gr` * U_ind + ups_ind$`1_rec_gr`,
+      "2_give_gr" = beta_phi$`2_give_gr` * U_ind + ups_ind$`2_give_gr`,
+      "2_rec_gr" = beta_phi$`2_rec_gr` * U_ind + ups_ind$`2_rec_gr`,
+      "give_gr_1" = beta_phi$`give_gr_1` * U_ind + ups_ind$`give_gr_1`,
+      "give_gr_2" = beta_phi$`give_gr_2` * U_ind + ups_ind$`give_gr_2`,
+      "rec_gr_1" = beta_phi$`rec_gr_1` * U_ind + ups_ind$`rec_gr_1`,
+      "rec_gr_2" = beta_phi$`rec_gr_2` * U_ind + ups_ind$`rec_gr_2`,
+    )
+    
+    ## 4. tau
+    tau <- tibble(
+      "1" = beta_tau$`1` * U_dyad + ups_dyad$`1`,
+      "2" = beta_tau$`2` * U_dyad + ups_dyad$`2`,
+      "gr_ab" = beta_tau$`gr` * U_dyad + ups_dyad$`gr_ab`,
+      "gr_ba" = beta_tau$`gr` * U_dyad + ups_dyad$`gr_ba`,
+      "1_gr_ab" = beta_tau$`1_gr` * U_dyad + ups_dyad$`1_gr_ab`,
+      "1_gr_ba" = beta_tau$`1_gr` * U_dyad + ups_dyad$`1_gr_ba`,
+      "2_gr_ab" = beta_tau$`2_gr` * U_dyad + ups_dyad$`2_gr_ab`,
+      "2_gr_ba" = beta_tau$`2_gr` * U_dyad + ups_dyad$`2_gr_ba`,
+      "gr_1_ab" = beta_tau$`gr_1` * U_dyad + ups_dyad$`gr_1_ab`,
+      "gr_2_ab" = beta_tau$`gr_2` * U_dyad + ups_dyad$`gr_2_ab`,
+      "gr_1_ba" = beta_tau$`gr_1` * U_dyad + ups_dyad$`gr_1_ba`,
+      "gr_2_ba" = beta_tau$`gr_2` * U_dyad + ups_dyad$`gr_2_ba`,
+    )
+    
+    
+    ## 5. theta
+    theta <- array(data = NA, dim = c(N_dyad, 4))
+    for (dyad in 1:N_dyad) {
+      theta[dyad, 1] <- exp(alpha$`1`[group] +
+                            Omega[[1]][dyads$z_a[dyad], dyads$z_b[dyad]] +
+                            phi$`1`[dyads$ind_a[dyad]] +
+                            phi$`1`[dyads$ind_b[dyad]] +
+                            tau$`1`[dyad])
+      
+      theta[dyad, 2] <- exp(alpha$`2`[group] +
+                            Omega[[2]][dyads$z_a[dyad], dyads$z_b[dyad]] +
+                            phi$`2`[dyads$ind_a[dyad]] +
+                            phi$`2`[dyads$ind_b[dyad]] +
+                            tau$`2`[dyad])
+      
+      theta[dyad, 3] <- exp(alpha$`gr`[group] +
+                            Omega[[3]][dyads$z_a[dyad], dyads$z_b[dyad]] +
+                            phi$`give_gr`[dyads$ind_a[dyad]] +
+                            phi$`rec_gr`[dyads$ind_b[dyad]] +
+                            tau$gr_ab[dyad])
+      
+      theta[dyad, 4] <- exp(alpha$`gr`[group] +
+                            Omega[[3]][dyads$z_b[dyad], dyads$z_a[dyad]] +
+                            phi$`rec_gr`[dyads$ind_a[dyad]] +
+                            phi$`give_gr`[dyads$ind_b[dyad]] +
+                            tau$`gr_ba`[dyad])
+    } # dyad
+    
+    ## 5.Psi
+    Psi <- array(data = NA, dim = c(4, 4, N_dyad))
+    for (dyad in 1:N_dyad) {
+      # Firs row
+     Psi[1, 2, dyad] <- 0
+     Psi[1, 3, dyad] <- alpha$`1_gr`[group] +
+        phi$`1_give_gr`[dyads$ind_a[dyad]] +
+        phi$`1_rec_gr`[dyads$ind_b[dyad]] +
+        tau$`1_gr_ab`[dyad]
+     Psi[1, 4, dyad] <- alpha$`1_gr`[group] +
+        phi$`1_rec_gr`[dyads$ind_a[dyad]] +
+        phi$`1_give_gr`[dyads$ind_b[dyad]] +
+        tau$`1_gr_ba`[dyad]
+      
+      # Second row
+     Psi[2, 1, dyad] <- 0
+     Psi[2, 3, dyad] <- alpha$`2_gr`[group] +
+        phi$`2_give_gr`[dyads$ind_a[dyad]] +
+        phi$`2_rec_gr`[dyads$ind_b[dyad]] +
+        tau$`2_gr_ab`[dyad]
+     Psi[2, 4, dyad] <- alpha$`2_gr`[group] +
+        phi$`2_rec_gr`[dyads$ind_a[dyad]] +
+        phi$`2_give_gr`[dyads$ind_b[dyad]] +
+        tau$`2_gr_ba`[dyad]
+      
+      # Third row
+      Psi[3, 1, dyad] <- alpha$`gr_1`[group] +
+        phi$`give_gr_1`[dyads$ind_a[dyad]] +
+        phi$`rec_gr_1`[dyads$ind_b[dyad]] +
+        tau$`gr_1_ab`[dyad]
+      Psi[3, 2, dyad] <- alpha$`gr_2`[group] +
+        phi$`give_gr_2`[dyads$ind_a[dyad]] +
+        phi$`rec_gr_2`[dyads$ind_b[dyad]] +
+        tau$`gr_2_ab`[dyad]
+      Psi[3, 4, dyad] <- 0
+      
+      # Fourth row
+      Psi[4, 1, dyad] <- alpha$`gr_1`[group] +
+        phi$`give_gr_1`[dyads$ind_b[dyad]] +
+        phi$`rec_gr_1`[dyads$ind_a[dyad]] +
+        tau$`gr_1_ba`[dyad]
+      Psi[4, 2, dyad] <- alpha$`gr_2`[group] +
+        phi$`give_gr_2`[dyads$ind_b[dyad]] +
+        phi$`rec_gr_2`[dyads$ind_a[dyad]] +
+        tau$`gr_2_ba`[dyad]
+      Psi[4, 3, dyad] <- 0
+    } # ind
+    
+    ## 6. Gamma
+    Gamma <- array(data = NA, dim = c(4, 4, N_dyad))
+    for (dyad in 1:N_dyad) {
+      for (k in 1:4) {
+        # Zero diagonal
+        Gamma[k, k, dyad] <- 0
+      } # end for k
+      
+      # Row 1
+      for (k in 2:4) {
+        Gamma[1, k, dyad] <- exp(Psi[1, k, dyad]) /
+          sum(exp(Psi[1, , dyad]), na.rm = T)
+      } # end for k
+      
+      # Row 2
+      for (k in c(1, 3, 4)) {
+        Gamma[2, k, dyad] <- exp(Psi[2, k, dyad]) /
+          sum(exp(Psi[2, , dyad]), na.rm = T)
+      } # end for k
+      
+      # Row 3
+      for (k in c(1, 2, 4)) {
+        Gamma[3, k, dyad] <- exp(Psi[3, k, dyad]) /
+          sum(exp(Psi[3, , dyad]), na.rm = T)
+      } # end for k
+      
+      # Row 4
+      for (k in 1:3) {
+        Gamma[4, k, dyad] <- exp(Psi[4, k, dyad]) /
+          sum(exp(Psi[4, , dyad]), na.rm = T)
+      } # end for k
+    } # end for dyad
+    
+    params[[group]] <- list(
+      dyads = dyads,
+      U_ind = U_ind,
+      U_dyad = U_dyad,
+      ups_ind = ups_ind,
+      ups_dyad = ups_dyad,
+      phi = phi,
+      tau = tau,
+      theta = theta,
+      Psi = Psi,
+      Gamma = Gamma
+    )
+  } # end for group
+  
+  params %>% return()
+} # end stochastic_param
+```
+
+
+## `ctmc`
+
+```{r}
+ctmc <- function(N_ind_vec = c(3, 3, 4),
+                 N_groups = length(N_ind_vec),
+                 N_dyad_vec = ((N_ind_vec * N_ind_vec) - N_ind_vec) / 2,
+                 params,
+                 delta = 5,
+                 end_sim = c(1e3, 1e3, 1e3),
+                 ...) {
+  
+  # First level of df is group
+  df <- list()
+  
+  for (group in 1:N_groups) {
+    # Second level of df is dyad
+    df[[group]] <- list()
+    N_dyad <- N_dyad_vec[group]
+    
+    for (dyad in 1:N_dyad) {
+      ## 1. First sojourn (state 1)
+      (df[[group]][[dyad]] <- tibble(
+        id = c(1, 1),          # observation id
+        long = rbinom(1, 1, 0.5) %>% rep(2),
+        x = rexp(1, 1 / (params[[group]]$theta[dyad, 1])) %>% rep(2), # long holding time
+        t = c(0, x[1]),        # time stamps
+        s = c(1, 1),           # state
+        z = c("start", "end"), # modifier
+        c = 0                  # censoring level
+      ))
+      
+      ## 2. Run the CTMC
+      repeat {
+        # Next transition
+        last_state <- df[[group]][[dyad]]$s %>% last()
+        new_state <- rmultinom(1, 1, params[[group]]$Gamma[,,dyad][last_state,]) %>%
+          which.max()
+        
+        # Next sojourn
+        df[[group]][[dyad]] <- df[[group]][[dyad]] %>%
+          add_row(
+            id = df[[group]][[dyad]]$id %>% last() + 1,
+            long = rbinom(1, 1, 0.5),
+            x = ifelse(new_state == 1 & long == 0,
+                       rexp(1, 1 / delta), # short holding time in s = 1
+                       rexp(1, 1 / (params[[group]]$theta[dyad, new_state])) 
+                       ),
+            t = df[[group]][[dyad]]$t %>% last(),
+            s = new_state,
+            z = "start",
+            c = 0
+          )
+        df[[group]][[dyad]] <- df[[group]][[dyad]] %>%
+          add_row(
+            id = df[[group]][[dyad]]$id %>% last(),
+            long = df[[group]][[dyad]]$long %>% last(),
+            x = df[[group]][[dyad]]$x %>% last(),
+            t = (df[[group]][[dyad]]$t %>% last()) +
+              last(df[[group]][[dyad]]$x),
+            s = df[[group]][[dyad]]$s %>% last(),
+            z = "end",
+            c = 0
+          )
+        
+        # break if we're after the maximal time
+        if (tail(df[[group]][[dyad]]$t, 1) >= end_sim[group]) {
+          break
+        } # end if
+      } # end break
+    } # end for dyad
+  } # end for group
+  df %>% return()
+} # end ctmc
+```
+
+For example:
+
+```{r}
+set.seed(2666)
+params <- stochastic_param(N_ind_vec = c(3, 4))
+(seq_states_ex <- ctmc(N_ind_vec = c(3, 4), params = params))
+```
+
+## `d_ff`
+
+```{r}
+d_ff <- function(df, start_focal, end_focal){
+for (dyad in 1:length(df)){
+# Censor the start of the dyadic focal follow 
+# i.e. we cut anything before start_focal 
+  df[[dyad]] <- df[[dyad]] %>%
+  add_row(t = start_focal, c = 1) %>%
+  add_row(t = end_focal, c = 2) %>%
+  arrange(t)  %>%
+  mutate(
+    id = case_when(
+      c == 1 ~ lag(id),
+      c == 2 ~ lead(id),
+      TRUE ~ id
+    ),
+    long = case_when(
+      c == 1 ~ lag(long),
+      c == 2 ~ lead(long),
+      TRUE ~ long
+    ),
+    s = case_when(
+      c == 1 ~ lag(s),
+      c == 2 ~ lead(s),
+      TRUE ~ s
+    ),
+    z = case_when(
+      c == 1 ~ "start",
+      c == 2 ~ "end",
+      TRUE ~ z
+    ),
+    x = case_when(
+      c == 1 ~ lead(t) - start_focal,
+      c == 2 ~ end_focal - lag(t),
+      TRUE ~ x
+    )
+  ) %>% group_by(id) %>%
+  mutate(
+    x = case_when(
+      sum(c) == 0 ~ x,                                       
+      sum(c) %in% c(1, 2) ~ x[2],
+      sum(c) == 3 ~ end_focal - start_focal                           
+    )
+  ) %>%
+  ungroup() %>% 
+  filter(t >= start_focal & t <= end_focal)
+  } # end for i
+  
+  return(df)
+} # end d_ff
+```
+
+Suppose I focal individual 1 of group 2, thereby essentially focaling the dyads 1, 2, and 3 of group 2:
+
+```{r}
+seq_states_ex[[2]][1:3] %>% d_ff(start_focal = 320, end_focal = 360)
+```
+
+## `sim`
+
+```{r}
+sim <- function(N_ind_vec,
+                N_group = length(N_ind_vec),
+                N_dyad_vec = ((N_ind_vec * N_ind_vec) - N_ind_vec) / 2,
+                parameters = params,
+                n_focals_vec,
+                burnin = 1e3,
+                duration_focal = 40,
+                end_sim_vec = burnin + n_focals_vec * duration_focal) {
+  ## 1. Define a number of objects
+  dyads <- list()     # list of dyads and individuals per group
+  sim_data <- list()  # simulated observations (sojourns in states per dyad)
+  d <- list()         # summary of sim_data
+  
+  ## 2. We run ctmc for each group
+  state_seq <- ctmc(N_ind_vec = N_ind_vec,
+                    params = parameters,
+                    end_sim = end_sim_vec)
+  
+  for (group in 1:N_group) {
+    ## 3. Define indidividuals & dyads
+    # We give individuals unique name across groups
+    # e.g. 1:10 (group 1), 11:26 (group 2), etc.
+    bl_ind <- c(0, head(N_ind_vec, -1))[1:group] %>% sum()
+    bl_dyad <- c(0, head(N_dyad_vec, -1))[1:group] %>% sum()
+    
+    N_ind <- N_ind_vec[group]
+    dyads[[group]] <- tibble(
+      grp = group,
+      ind_a = bl_ind + t(combn(N_ind, 2))[, 1],
+      ind_b = bl_ind + t(combn(N_ind, 2))[, 2],
+      z_a = parameters[[group]]$dyads$z_a,
+      z_b = parameters[[group]]$dyads$z_b,
+      dyad_id = bl_dyad + c(1:N_dyad_vec[group])
+    )
+    
+    
+    ## 4. Define sequence of focal follows for each group
+    # 4.1 Sequence of individuals ids to focal by group
+    # We make sure to focal each individual at least once
+    focal_ind <- bl_ind + c(1:N_ind)
+    
+    # For the remaining focal-follows, we draw individuals at random
+    focal_ind[(N_ind + 1):n_focals_vec[group]] <-
+      sample(x = bl_ind + 1:N_ind,
+             size = n_focals_vec[group] - N_ind,
+             replace = TRUE)
+    
+    # 4.2 We mark the start time of the focal-follows
+    time_stamps <- seq(from = burnin, to = end_sim_vec[[group]], by = duration_focal)
+    
+    dyads_to_sample <- list()    # dyads to sample for each focal follow
+    sim_data[[group]] <- list()  # observed sequence of states
+    d[[group]] <- list()
+    
+    # for each focal follow (e.g. ff of ind 1, of ind 3, of ind 4, ...)
+    for (focal in 1:n_focals_vec[group]) {
+      # sim_data is indexed by (i) group; (ii) ind. focal follow; (iii) dyad.
+      sim_data[[group]][[focal]] <- list()
+      d[[group]][[focal]] <- list()
+      
+      ## 5. We conduct the focal follows per se
+      # Which *dyads* are we practically following for each ind. focal-follow
+      dyads_to_sample[[focal]] <- dyads[[group]] %>%
+        filter(ind_a == focal_ind[focal] |
+                 ind_b == focal_ind[focal]) %>%
+        pull(dyad_id)
+      
+      # We select the latent state sequence of interest
+      sim_data[[group]][[focal]] <- 
+        state_seq[[group]][dyads_to_sample[[focal]] - bl_dyad]
+      
+      # We cut the windows corresponding to focal-follows
+      sim_data[[group]][[focal]] <- d_ff(sim_data[[group]][[focal]],
+                                         time_stamps[focal],
+                                         time_stamps[focal] + duration_focal)
+      
+   
+      # for each dyad
+      for (dyad in 1:(N_ind - 1)) {
+        ## add name of focal individual and focal dyad for each
+        sim_data[[group]][[focal]][[dyad]] <-
+          sim_data[[group]][[focal]][[dyad]] %>%
+          mutate(focal_id = focal_ind[focal],
+                 focal_dyad = dyads_to_sample[[focal]][dyad])
+        
+        ## 6. Summarise each sojourn by a few variables
+        d[[group]][[focal]][[dyad]] <-
+          sim_data[[group]][[focal]][[dyad]] %>%
+          group_by(id) %>%               # for each state state id
+          summarize(
+            grp = group,              # grp id
+            long = first(long),       # long sub-state
+            x = first(x),             # holding time
+            s = first(s),             # state
+            c = ifelse(sum(c) < 2, 0, 1),# censoring = {0, 1}
+            dyad = first(focal_dyad), # id of dyad
+            focal_id = first(focal_id), # id of focal individual
+            prot_id = focal           # id of the protocol          
+          ) %>%
+          select(-id)
+      } # end dyad
+    } # end for focal
+    
+    d[[group]] <- d[[group]] %>% bind_rows()
+  } # end for group
+  
+  ## 7. We collapse the sojourn data
+  d <- d %>%
+    bind_rows() %>%
+    group_by(grp, focal_id, dyad, prot_id) %>%
+    # add a unique identifier per dyadic focal follow
+    mutate(prot_id = cur_group_id()) %>%
+    ungroup() %>%
+    arrange(prot_id)
+  
+  ## 8. Tansitions
+  obs_tr <- tibble(
+    grp = head(d$grp, -1),
+    dyad_id = head(d$dyad, -1),
+    prot_id_from = head(d$prot_id, -1),
+    prot_id_to = tail(d$prot_id, -1),
+    s_from = head(d$s, -1),
+    s_to = tail(d$s, -1)
+  ) %>%
+    filter(prot_id_from == prot_id_to) %>%
+    select(-c(prot_id_from, prot_id_to))
+  
+  ## 9. Exposure and "events" in each state
+  exp_events <- d %>%
+    mutate(observed = ifelse(c == 0, 1, 0)) %>%
+    group_by(dyad, s) %>%
+    # Amount of time spent in each state
+    summarise(exposure = sum(x),
+              # how many times have we observed the end?
+              events = sum(observed)) %>%
+    right_join(expand.grid(dyad = 1:sum(N_dyad_vec),
+                           s = 1:4)) %>%
+    arrange(dyad, s) %>%
+    mutate_at(c("exposure", "events"), ~ replace_na(., 0))
+    
+  
+  # Stan-friendly format
+  list <- list()
+  
+  # General indices
+  list$N_dyad <- sum(N_dyad_vec)
+  list$N_ind <- sum(N_ind_vec)
+  list$N_group <- N_group
+  list$N_ind_per_group <- N_ind_vec
+  list$N_dyad_per_group <- N_dyad_vec  
+  
+  # Individuals and dyads (dataset "A")
+  list$A_grp <- bind_rows(dyads)$grp
+  list$A_ind_a <- bind_rows(dyads)$ind_a
+  list$A_ind_b <- bind_rows(dyads)$ind_b
+  list$A_dyad <- bind_rows(dyads)$dyad_id
+  list$A_z_a <- bind_rows(dyads)$z_a
+  list$A_z_b <- bind_rows(dyads)$z_b
+  
+  # Observations j: sequence of states (dataset "B")
+  list$J <- bind_rows(d) %>% nrow()
+  list$B_grp <- d$grp
+  list$B_x <- d$x
+  list$B_s <- d$s
+  list$B_c <- d$c
+  list$B_long <- d$long
+  list$B_dyad <- d$dyad
+  
+  # Observed transitions (dataset "C")
+  list$N_trans <- nrow(obs_tr)
+  list$C_grp <- obs_tr$grp
+  list$C_dyad <- obs_tr$dyad_id
+  list$C_s_from <- obs_tr$s_from
+  list$C_s_to <- obs_tr$s_to
+  
+  # Observed exposure time and count of events in each state (dataset "D")
+  list$N_row_D <- nrow(exp_events)
+  list$D_dyad <- exp_events$dyad
+  list$D_s <- exp_events$s
+  list$D_exposure <- exp_events$exposure
+  list$D_events <- exp_events$events
+
+  list %>% return()  
+} # end sim
+```
+
+## Run `sim`
+
+Function to call `sim` in parallel.
+
+```{r}
+run_sim <- function(i, n_individuals, n_focals, param, 
+                    duration_f = 40){  
+  d <- sim(
+    burnin = 1e3,
+    duration_focal = duration_f,
+    N_ind_vec = n_individuals,
+    n_focals_vec = n_focals,
+    parameters = param[[i]]
+  )
+  
+  return(d)
+}
+```
+
+We run it:
+
+```{r, eval = FALSE}
+param_1 <- list() # stochastic parameters
+d_1 <- list()     # simulated data
+
+# We run sim 10 times
+set.seed(546)
+for (i in 1:10) {
+  param_1[[i]] <- stochastic_param(N_ind_vec = c(10, 10, 10, 10))
+}
+
+param_1 %>% saveRDS("./sim_data/02/param_1.rds")
+
+# we run the sim function (parallelised)
+d_1 <- mclapply(
+  1:10, 
+  function(i) run_sim(i, 
+                      n_individuals = c(10, 10, 10, 10),
+                      n_focals = c(1500, 1500, 1500, 1500),
+                      param = param_1)
+)
+
+# We save the data
+  d_1 %>% saveRDS("./sim_data/02/d_1.rds")
+```
+
+# Statistical model
+
+```{r}
+# Stan model
+  (m_1 <- cmdstan_model("./stan_models/extended_model.stan"))
+```
+
+## MCMC
+
+Function to run the Stan model:
+
+```{r}
+# Function to run Stan model and process posterior samples
+run_stan_model <- function(i, 
+                           d, 
+                           m,
+                           warmum = 1e3,
+                           post_warmup = 1e3,
+                           n_chains = 4,
+                           para_chains = 4) {
+  
+  # Run Stan
+  post <- m$sample(
+    data = d[[i]],
+    iter_warmup = warmum,
+    iter_sampling = post_warmup,
+    chains = n_chains,
+    parallel_chains = para_chains,
+    show_messages = TRUE
+  )
+  
+  # Extract samples
+  post_tidy <- post %>%
+    tidy_draws() %>%
+    mutate(iter = i)
+  
+  # Diagnostics
+  diag <- post$summary() %>%
+    mutate(iter = i)
+  
+  # diagnostics and post samples as output
+  output <- list(
+    diag = diag,
+    samles = post_tidy
+  )
+
+  return(output)
+}
+```
+
+We import the data:
+```{r}
+# Import data
+d_1 <- readRDS("./sim_data/02/d_1.rds")
+```
+
+
+We loop over the iterations:
+
+```{r, eval = FALSE}
+options(warn = 1)
+post_1 <- list()
+
+# parallelise for loop
+post_1 <- mclapply(
+  1:10, 
+  function(i) run_stan_model(i, d_1, m_1)
+)
+
+# Extract diagnostics from each iteration
+diag_1 <- lapply(post_1, `[[`, "diag") %>% bind_rows()
+
+# Extract posterior samples from all iterations and bind rows
+post_1 <- lapply(post_1, `[[`, "samles") %>% bind_rows()
+
+# We save the posterior
+post_1 %>%
+  saveRDS("./fitted_models/02.1/post_1.rds")
+diag_1 %>%
+  saveRDS("./fitted_models/02.1/diag_1.rds")
+```
+
+We import the posterior draws and diagnostics
+
+```{r}
+post_1 <- readRDS("./fitted_models/02.1/post_1.rds")
+```
+
+## Fixed effects
+
+```{r}
+target <- a %>%
+  mutate(grp = row_number()) %>%
+  slice(1:4) %>%
+  select(c(1:3, ncol(.))) %>%
+  gather(param, value, 1:3) %>%
+  mutate(value = value) %>%
+  mutate(param = paste0("alpha_", param, "[", grp, "]")) %>%
+  select(-grp) %>%
+  mutate(iter = 1) %>%
+  add_row(param = "delta", value = 5, iter = 1)
+
+post_1 %>%
+  select(starts_with("alpha_1["), starts_with("alpha_2["), starts_with("alpha_gr["), "delta", "iter") %>%
+  gather(param, value, 1:(ncol(.)-1)) %>%
+  post_plot(target,
+            scale_slab = 0.5,
+            alpha_filling = 0.1,
+            min = 0, max = 15)
+```
+
+Sex effects:
+
+```{r, eval = FALSE}
+#| code-fold: true
+#| code-summary: "We load a few packages and functions."
+target_omega <- tibble(
+  `Omega_1[1,1]` = sex_effects[[1]][1,1],
+  `Omega_1[1,2]` = sex_effects[[1]][1,2],
+  `Omega_1[2,2]` = sex_effects[[1]][2,2],
+  `Omega_2[1,1]` = sex_effects[[2]][1,1],
+  `Omega_2[1,2]` = sex_effects[[2]][1,2],
+  `Omega_2[2,2]` = sex_effects[[2]][2,2],
+  `Omega_gr[1,1]` = sex_effects[[3]][1,1],
+  `Omega_gr[1,2]` = sex_effects[[3]][1,2],
+  `Omega_gr[2,1]` = sex_effects[[3]][2,1],
+  `Omega_gr[2,2]` = sex_effects[[3]][2,2]
+) %>%
+  gather(param, value, 1:(ncol(.))) %>%
+  mutate(iter = 1)
+
+post_1 %>%
+  select(starts_with("Omega_1["), starts_with("Omega_2["), starts_with("Omega_gr["), "iter") %>%
+  select(- c("Omega_1[2,1]", "Omega_2[2,1]")) %>%
+  gather(param, value, 1:(ncol(.)-1)) %>%
+  post_plot(target_omega,
+            scale_slab = 0.5,
+            min = -3, max = 3)
+```
+
+## Posterior predictions
+
+### Holding times
+
+```{r, message=FALSE}
+d_1 <- readRDS("./sim_data/02/d_1.rds")
+
+# Observed holding times for j in {1, ..., J}
+  obs_ht <- tibble(
+    dyad = d_1[[1]]$B_dyad,
+    s = d_1[[1]]$B_s,
+    x = d_1[[1]]$B_x,
+    c = d_1[[1]]$B_c
+  )
+
+# theta posterior samples
+thetas <- post_1 %>%
+  filter(iter == 1) %>%
+  select(starts_with("theta["), delta, proba) %>% 
+  slice(1:30) %>%
+  mutate(sample = 1:nrow(.)) %>%
+  gather(param, value, 1:(ncol(.) - 3)) %>%
+  extract(param, into = c("dyad", "s"), regex = "theta\\[(\\d+),(\\d+)\\]", convert = TRUE)
+
+# For each observed holding time
+post_pred_x <- list()
+for (spl in 1:30) {
+  post_pred_x[[spl]] <- obs_ht %>%
+  select(-x) %>%
+  left_join(thetas %>% filter(sample == spl)) %>%
+  mutate(long = rbinom(nrow(.), 1, proba),
+         value = ifelse(s == 1 & long == 0, delta, value)) %>%
+    mutate(x = rexp(nrow(.), 1 / value)) %>%
+    filter(x <= 40)
+}
+```
+
+For each posterior, and for each observed sojourn in a given state, we draw a posterior prediction.
+We then only keep sojourns smaller than 40 minutes.
+
+```{r}
+# We bin the observed holding times for plotting
+pp_x_tbl <- post_pred_x %>%
+  bind_rows() %>%
+  # Binning sequence
+  mutate(bin = sapply(x, function(val)
+    seq(2.5, 37.5, by = 5)[which.min(abs(seq(2.5, 37.5, by = 5) - val))])) %>%
+  group_by(s, sample, bin) %>%
+  summarise(count = n()) %>%
+  group_by(s, sample) %>%
+  # Fill in the zeros
+  complete(bin = seq(2.5, 37.5, by = 5), fill = list(count = 0)) %>%
+  ungroup()
+
+p1 <- obs_ht %>% filter(s == 1 & c == 0) %>%
+hist_plot(
+    colbin = "#c9c7bd",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 1),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#c9c7bd"
+  )
+
+p2 <- obs_ht %>% filter(s == 2 & c == 0) %>%
+hist_plot(
+    colbin = "#E9C4C1",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 2),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#d1a7a3"
+  )
+
+p3 <- obs_ht %>% filter(s == 3 & c == 0) %>%
+hist_plot(
+    colbin = "#ce8da6",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 3),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#a37184"
+  )
+
+p4 <- obs_ht %>% filter(s == 4 & c == 0) %>%
+hist_plot(
+    colbin = "#996282",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 4),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#7a4e68"
+  )
+```
+
+### Transitions
+
+```{r}
+obs_tr <- tibble(
+dyad = d_1[[1]]$C_dyad,
+s_from = d_1[[1]]$C_s_from
+)
+
+# gamma posterior samples
+gammas <- post_1 %>%
+  filter(iter == 1) %>%
+  select(starts_with("Gamma[")) %>% 
+  slice(1:30) %>%
+  mutate(sample = 1:nrow(.)) %>%
+  gather(param, value, 1:(ncol(.) - 1)) %>%
+  extract(param, into = c("dyad", "s_from", "s_to"), 
+          regex = "Gamma\\[(\\d+),(\\d+),(\\d+)\\]", convert = TRUE) %>%
+  pivot_wider(names_from = s_to, 
+              values_from = value, 
+              names_prefix = "s_to_")
+
+
+post_pred_tr <- list()
+for (spl in 1:30) {
+  post_pred_tr[[spl]] <- obs_tr %>%
+  left_join(gammas %>% filter(sample == spl)) %>%
+  mutate(s_to = mapply(function(s1, s2, s3, s4) sample(1:4, size = 1, prob = c(s1, s2, s3, s4)),
+                      s_to_1, s_to_2, s_to_3, s_to_4))
+  post_pred_tr[[spl]] <- post_pred_tr[[spl]] %>%
+  group_by(s_from, s_to) %>%
+  summarise(count = n()) %>%
+    mutate(sample = spl)
+}
+
+post_pred_tr_tbl <- post_pred_tr %>%
+  bind_rows() %>%
+  mutate(s_to = as.factor(s_to))
+
+obs_tr_smry <- obs_tr %>%
+  mutate(s_to = as.factor(d_1[[1]]$C_s_to)) %>%
+  group_by(s_from, s_to) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+p5 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 1),
+  col_data = c("#E9C4C1", "#ce8da6", "#996282"),
+  col_post = c("#E9C4C1", "#ce8da6", "#996282"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 1)
+)
+
+p6 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 2),
+  col_data = c("#c9c7bd", "#ce8da6", "#996282"),
+  col_post = c("#ce8da6","#996282", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 2)
+)
+
+p7 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 3),
+  col_data = c("#c9c7bd", "#E9C4C1", "#996282"),
+  col_post = c("#E9C4C1", "#996282", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 3)
+)
+
+p8 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 4),
+  col_data = c("#c9c7bd", "#E9C4C1", "#ce8da6"),
+  col_post = c("#E9C4C1", "#ce8da6", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 4)
+)
+
+wrap_plots(p1, p5, p2, p6, 
+           p3, p7, p4, p8, ncol = 2)
+```
+
+## Posterior contrasts
+
+Target values from the generative simulation:
+```{r, eval=FALSE}
+avgs <- list()
+for (i in 1:1e3) {
+  param_test <- stochastic_param(N_ind_vec = c(10, 10, 10))
+   
+  target <- list()
+  for (gr in 1:3) {
+    target[[gr]] <- tibble(
+      z = paste0(param_test[[gr]]$dyads$z_a, "_", param_test[[gr]]$dyads$z_b),
+      theta_1 = param_test[[gr]]$theta[, 1] / (12 * 60),
+      theta_2 = param_test[[gr]]$theta[, 2],
+      theta_3 = param_test[[gr]]$theta[, 3]
+    )
+  }
+  
+  avgs[[i]] <- target %>%
+    bind_rows() %>%
+    mutate(dyad = 1:nrow(.)) %>%
+    group_by(z) %>%
+    summarise(
+      avg_1 = mean(theta_1),
+      avg_2 = mean(theta_2),
+      avg_3 = mean(theta_3),
+      iter = i
+    )
+}
+
+avgs <- avgs %>%
+  bind_rows() %>%
+  group_by(z) %>%
+  summarise(
+      avg_1 = mean(avg_1),
+      avg_2 = mean(avg_2),
+      avg_3 = mean(avg_3)
+    )
+avgs %>% saveRDS("./sim_data/02/param_avg.rds")
+```
+
+```{r}
+avgs <- readRDS("./sim_data/02/param_avg.rds")
+p1 <- post_1 %>%
+  select(`avg_s1[1]`, iter) %>%
+  mutate(value = `avg_s1[1]` / (60 * 12)) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    target_data = avgs$avg_1[1],
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- post_1 %>%
+  select(`avg_s1[2]`, iter) %>%
+  mutate(value = `avg_s1[2]` / (60 * 12)) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    y_space = -0.07,
+    scale_dens = 0.5,
+    target_data = avgs$avg_1[2],
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits = c(-0.142, 1.15),
+                       expand = c(0, 0))
+
+p3 <- post_1 %>%
+  select(`avg_s1[3]`, iter) %>%
+  mutate(value = `avg_s1[3]` / (60 * 12)) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    target_data = avgs$avg_1[4],
+  )
+
+p4 <- post_1 %>%
+  select(`avg_s2[1]`, iter) %>%
+  mutate(value = `avg_s2[1]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    target_data = avgs$avg_2[1],
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p5 <- post_1 %>%
+  select(`avg_s2[2]`, iter) %>%
+  mutate(value = `avg_s2[2]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    scale_dens = 0.5,
+    y_space = -0.07,
+    target_data = avgs$avg_2[2],
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits = c(-0.142, 1.15),
+                       expand = c(0, 0))
+
+p6 <- post_1 %>%
+  select(`avg_s2[3]`, iter) %>%
+  mutate(value = `avg_s2[3]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    target_data = avgs$avg_2[4],
+  )
+
+p7 <- post_1 %>%
+  select(`avg_gr[1]`, iter) %>%
+  mutate(value = `avg_gr[1]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    target_data = avgs$avg_3[1],
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p8 <- post_1 %>%
+  select(`avg_gr[2]`, iter) %>%
+  mutate(value = `avg_gr[2]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    target_data = avgs$avg_3[2],
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p9 <- post_1 %>%
+  select(`avg_gr[3]`, iter) %>%
+  mutate(value = `avg_gr[3]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    y_space = -0.175,
+    target_data = avgs$avg_3[3],
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p10 <- post_1 %>%
+  select(`avg_gr[4]`, iter) %>%
+  mutate(value = `avg_gr[4]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 20,
+    lower_bound = 1,
+    target_data = avgs$avg_3[4],
+  )
+
+
+design <-
+"ADG
+ BEH
+ BEI
+ CFJ"
+
+p1 + p2 + p3 + p4 + p5 + 
+p6 + p7 + p8 + p9 + p10 +
+  plot_layout(design = design)
+```
+
+
+```{r}
+avgs <- readRDS("./sim_data/02/param_avg.rds")
+p1 <- post_1 %>%
+  select(`ATE_s1[1]`, iter) %>%
+  mutate(value = `ATE_s1[1]` / (60 * 12)) %>%
+  post_plot_2(
+    min = -30,
+    max = 20,
+    y_space = -0.07,
+    scale_dens = 0.5,
+    target_data = avgs$avg_1[2] - avgs$avg_1[1],
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits = c(-0.142, 1.15),
+                       expand = c(0, 0))
+
+p2 <- post_1 %>%
+  select(`ATE_s1[2]`, iter) %>%
+  mutate(value = `ATE_s1[2]` / (60 * 12)) %>%
+  post_plot_2(
+    min = -30,
+    max = 20,
+    target_data = avgs$avg_1[4] - avgs$avg_1[1],
+  )
+
+p3 <- post_1 %>%
+  select(`ATE_s2[1]`, iter) %>%
+  rename(value = `ATE_s2[1]`) %>%
+  post_plot_2(
+    min = -10,
+    max = 15,
+    y_space = -0.07,
+    scale_dens = 0.5,
+    target_data = avgs$avg_2[2] - avgs$avg_2[1],
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(limits = c(-0.142, 1.15),
+                       expand = c(0, 0))
+
+p4 <- post_1 %>%
+  select(`ATE_s2[2]`, iter) %>%
+  rename(value = `ATE_s2[2]`) %>%
+  post_plot_2(
+    min = -10,
+    max = 15,
+    target_data = avgs$avg_2[4] - avgs$avg_2[1],
+  )
+
+p5 <- post_1 %>%
+  select(`ATE_gr[1]`, iter) %>%
+  rename(value = `ATE_gr[1]`) %>%
+  post_plot_2(
+    min = -10,
+    max = 15,
+    target_data = avgs$avg_3[2] - avgs$avg_3[1],
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p6 <- post_1 %>%
+  select(`ATE_gr[2]`, iter) %>%
+  rename(value = `ATE_gr[2]`) %>%
+  post_plot_2(
+    min = -10,
+    max = 15,
+     target_data = avgs$avg_3[3] - avgs$avg_3[1],
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p7 <- post_1 %>%
+  select(`ATE_gr[3]`, iter) %>%
+  rename(value = `ATE_gr[3]`) %>%
+  post_plot_2(
+    min = -10,
+    max = 15,
+     target_data = avgs$avg_3[4] - avgs$avg_3[1],
+  )
+
+design <-
+"ACE
+ ACF
+ BDG"
+
+p1 + p2 + p3 + 
+p4 + p5 + p6 + p7 +
+  plot_layout(design = design)
+```
+

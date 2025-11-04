@@ -1,0 +1,849 @@
+---
+title: "Core models (empirical data)"
+format:
+  html: 
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We load a few packages and functions."
+# Packages
+  library(tidyverse)
+  library(tidybayes)
+  library(rethinking)
+  library(patchwork)
+  library(cmdstanr)
+  library(GGally)
+
+# dplyr options
+  options(dplyr.summarise.inform = FALSE)
+  
+# Functions
+  post_plot <- readRDS("./functions/post_plot.rds")
+  post_plot_2 <- readRDS("./functions/post_plot_2.rds")
+  plot_interval <- readRDS("./functions/plot_interval.rds")
+  hist_plot <- readRDS("./functions/hist_plot.rds")
+  binom_pmf <- readRDS("./functions/binom_pmf.rds")
+  hist_plot_simple <- readRDS("./functions/hist_plot_simple.rds")
+
+# Empirical data
+  d_tibble <- readRDS("./empirical_data/states_tibble.rds")
+  d <- readRDS("./empirical_data/d_stan_format.stan")
+  
+# Stan model
+  m_1 <- cmdstan_model("./stan_models/core_model.stan")
+```
+
+# Empirical distributions
+
+Sampling effort (hours) per individual and dyad:
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3
+#| code-fold: true
+#| code-summary: "Show code:"
+d_tibble %>%
+  group_by(id_iff) %>%
+  slice(1) %>%
+  ungroup() %>%
+  group_by(focal_animal) %>%
+  summarise(obs_effort = sum(X) / 60) %>%
+  pull(obs_effort) %>% 
+  hist_plot_simple(min = 0,
+                   max = 200,
+                   breaks = 20,
+                   fill = "#acbfb7",
+                   linewidth = 0.5,
+                   min_count = 0)
+
+d_tibble %>%
+  group_by(focal_dyad) %>%
+  summarise(obs_effort = sum(X) / 60) %>%
+  pull(obs_effort) %>% 
+  hist_plot_simple(min = 0,
+                   max = 500,
+                   breaks = 20,
+                   fill = "#acbfb7",
+                   linewidth = 0.5,
+                   min_count = 0)
+```
+
+Number of observations $j$ across dyads:
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3
+#| code-fold: true
+#| code-summary: "Show code:"
+d_tibble %>%
+  group_by(focal_dyad, S) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  complete(focal_dyad, S, fill = list(count = 0)) %>%
+  mutate(S = paste0("S = ", S)) %>%
+  
+  ggplot(aes(x = count)) +
+  geom_histogram(
+      col = "#f7f7f0",
+      linewidth = 0.5,
+      fill = "#acbfb7",
+      bins = 10
+    ) +
+    stat_bin(
+      bins = 10,
+      geom = "text",
+      aes(label = after_stat(
+        if_else (condition = count > 0 & count < 4,
+                 as.character(count), "")
+      )),
+      vjust = -1,
+      size = 2,
+      col = "#4d4d4d"
+    ) +
+  facet_wrap(~ S, scale = "free_x", ncol = 5) +
+
+  theme_bw() +
+    theme(
+      axis.text.x = element_text(vjust = 0),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.y = element_line(
+        color = "#ccccc0",
+        linewidth = 0.3,
+        linetype = "dotted"
+      ),
+      panel.border = element_blank(),
+      panel.spacing = unit(2, "lines"),
+      strip.background = element_rect(fill = "white", color = "white"),
+      plot.margin = margin(0, 1, 0, 0, "cm"),
+    ) +
+    labs(y = "", x = "")
+```
+
+Number of transitions across dyads:
+
+```{r}
+#| fig-width: 9
+#| fig-height: 9
+#| code-fold: true
+#| code-summary: "Show code:"
+tibble(
+  dyad = d$C_dyad,
+  S_from = d$C_s_from,
+  S_to = d$C_s_to
+) %>%
+  group_by(dyad, S_from, S_to) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  complete(dyad, S_from, S_to, fill = list(count = 0)) %>%
+  mutate(S = paste0("S = ", S_from, " to S = ", S_to)) %>%
+
+ggplot(aes(x = count)) +
+  geom_histogram(
+    col = "#f7f7f0",
+    linewidth = 0.5,
+    fill = "#acbfb7",
+    bins = 10
+  ) +
+
+  stat_bin(
+    bins = 10,
+    geom = "text",
+    aes(label = after_stat(
+      if_else (condition = count > 0 & count < 4,
+               as.character(count), "")
+    )),
+    vjust = -1,
+    size = 2,
+    col = "#4d4d4d"
+  ) +
+  facet_wrap(~ S, scale = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(vjust = 0),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major.y = element_line(
+      color = "#ccccc0",
+      linewidth = 0.3,
+      linetype = "dotted"
+    ),
+    panel.border = element_rect(fill = "transparent", color = "#ccccc0"),
+    panel.spacing = unit(1, "lines"),
+    strip.background = element_rect(fill = "white", color = "white"),
+    plot.margin = margin(0, 1, 0, 0, "cm")
+  ) +
+  labs(y = "", x = "")
+```
+
+
+
+# Fitting the model
+
+We fit the data `d` to the Stan model `m_1`:
+
+```{r, eval=FALSE}
+post_1 <- m_1$sample(
+  data = d,
+  iter_warmup = 1e3,
+  iter_sampling = 1e3,
+  chains = 4,
+  parallel_chains = 4
+)
+
+# empty model
+post_1 %>%
+  saveRDS("./fitted_models/01.2/post_empirical_1_raw.rds")
+
+post_1_draws <- post_1 %>% tidy_draws()
+post_1_draws %>%
+  saveRDS("./fitted_models/01.2/post_empirical_1_draws.rds")
+
+diagnostics_1 <- post_1$summary()
+diagnostics_1 %>%
+    saveRDS("./fitted_models/01.2/diagnostics_empirical_1.rds")
+```
+
+We then import the posterior draws:
+```{r}
+post <- readRDS("./fitted_models/01.2/post_empirical_1_draws.rds")
+diagnostics <- readRDS("./fitted_models/01.2/diagnostics_empirical_1.rds")
+```
+
+# Diagnostics
+
+```{r, eval = FALSE}
+#| fig-width: 7
+#| fig-height: 3
+#| code-fold: true
+#| code-summary: "Show code:"
+# Assume `fit` is your cmdstanr object
+Rhats <- diagnostics$rhat
+ess_bulk <- diagnostics$ess_bulk
+ess_tail <- diagnostics$ess_tail
+Rhats %>%
+  discard(is.na) %>%
+  hist_plot_simple(min = 0.999,
+                  max = 1.015,
+                   breaks = 50,
+                   fill = "#acbfb7",
+                   linewidth = 0.5)
+
+
+ess_bulk %>%
+  discard(is.na) %>%
+  hist_plot_simple(max = max(ess_bulk, na.rm = T) + 500,
+                   fill = "#acbfb7",
+                   breaks = 50,
+                   linewidth = 0.5)  +
+     geom_vline(xintercept = 250, linewidth = 0.4, linetype = "dotted",
+                color = "#ccccc0")
+
+ess_tail %>%
+  discard(is.na) %>%
+  hist_plot_simple(max = max(ess_tail, na.rm = T) + 500,
+                   fill = "#acbfb7",
+                   breaks = 50,
+                   linewidth = 0.5)  +
+     geom_vline(xintercept = 250, linewidth = 0.4, linetype = "dotted",
+                color = "#ccccc0")
+```
+
+
+# $\theta$ and $\Gamma$
+
+```{r}
+set.seed(369)
+dyads_vec <- sample(1:849, 10, replace = FALSE)
+```
+
+
+```{r}
+# naive estimates holding times
+naive_estimates <- tibble(
+  dyad = d$D_dyad,
+  s = d$D_s,
+  param = paste0("theta[", dyad, ",", s ,"]"),
+  exposure = d$D_exposure,
+  events = d$D_events,
+  value = exposure / events
+) %>%
+  filter(dyad %in% dyads_vec)
+
+p1 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("theta[", dyads_vec, ",1]"))) %>%
+  gather(param, value, 1:ncol(.)) %>%
+  mutate(value = value / (60 * 12)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s == 1) %>%
+  mutate(value = value / (60 * 12)),
+  double_bounded = 0,
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p2 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("theta[", dyads_vec, ",2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+    naive_values = naive_estimates %>% filter(s == 2)  %>%
+  mutate(value = ifelse(value > 30, Inf, value)),
+  double_bounded = 0,
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p3 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("theta[", dyads_vec, ",3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+    naive_values = naive_estimates %>% filter(s == 3)  %>%
+  mutate(value = ifelse(value > 30, Inf, value)),
+  double_bounded = 0,
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p4 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("theta[", dyads_vec, ",4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+    naive_values = naive_estimates %>% filter(s == 4)  %>%
+  mutate(value = ifelse(value > 30, Inf, value)),
+  double_bounded = 0,
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+
+
+naive_estimates <-tibble(
+  dyad = d$C_dyad,
+  s_from = d$C_s_from,
+  s_to = d$C_s_to,
+) %>%
+  group_by(dyad, s_from, s_to) %>%
+  summarise(count = n()) %>%
+  right_join(expand.grid(
+  dyad = dyads_vec,
+  s_from = 1:4,
+  s_to = 1:4)
+) %>%
+  arrange(dyad, s_from, s_to) %>%
+  mutate(count = replace_na(count, 0)) %>%
+  group_by(dyad, s_from) %>%
+  mutate(tot_count = sum(count),
+         count = if_else(tot_count == 0, NA_real_, count),
+         param = paste0("Gamma[", dyad, ",", s_from, ",", s_to, "]")) %>%
+  group_by(dyad, s_from) %>%
+  mutate(value = count / sum(count))
+
+p5 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",1,2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 1 & s_to == 2),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p6 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",1,3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 1 & s_to == 3),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p7 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",1,4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 1 & s_to == 4),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p8 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",2,1]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 2 & s_to == 1),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p9 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",2,3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 2 & s_to == 3),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p10 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",2,4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 2 & s_to == 4),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p11 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",3,1]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 3 & s_to == 1),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p12 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",3,2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 3 & s_to == 2),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p13 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",3,4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 3 & s_to == 4),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p14 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",4,1]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 4 & s_to == 1),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p15 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",4,2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 4 & s_to == 2),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p16 <- plot_interval(
+  draws = post %>%
+  select(all_of(paste0("Gamma[", dyads_vec, ",4,3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_targets = FALSE,
+  naive_values = naive_estimates %>% filter(s_from == 4 & s_to == 3),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+ep <- plot_spacer()
+wrap_plots(p1, p2, p3, p4,
+           ep, p5, p6, p7,
+           p8, ep, p8, p10,
+           p11, p12, ep, p13,
+           p14, p15, p16, ep,
+           ncol = 4)
+```
+
+
+# Average $\theta$ and $\Gamma$
+
+```{r}
+post$`avg_theta[1]_days` <- post$`avg_theta[1]`/ (60 * 12)
+post$iter <- 1
+
+p1 <- post %>%
+  select(`avg_theta[1]_days`, iter) %>%
+  mutate(value = `avg_theta[1]_days`) %>%
+  post_plot_2(
+    min = 0,
+    max = 12,
+    lower_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p2 <- post %>%
+  select(`avg_theta[2]`, iter) %>%
+  mutate(value = `avg_theta[2]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 4,
+    lower_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p3 <- post %>%
+  select(`avg_theta[3]`, iter) %>%
+  mutate(value = `avg_theta[3]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 8,
+    lower_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p4 <- post %>%
+  select(`avg_Gamma[1,2]`, iter) %>%
+  mutate(value = `avg_Gamma[1,2]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 1,
+    lower_bound = 1,
+    upper_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p5 <- post %>%
+  select(`avg_Gamma[1,3]`, iter) %>%
+  mutate(value = `avg_Gamma[1,3]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 1,
+    lower_bound = 1,
+    upper_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+
+p6 <- post %>%
+  select(`avg_Gamma[2,1]`, iter) %>%
+  mutate(value = `avg_Gamma[2,1]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 1,
+    lower_bound = 1,
+    upper_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p7 <- post %>%
+  select(`avg_Gamma[2,3]`, iter) %>%
+  mutate(value = `avg_Gamma[2,3]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 1,
+    lower_bound = 1,
+    upper_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p8 <- post %>%
+  select(`avg_Gamma[3,1]`, iter) %>%
+  mutate(value = `avg_Gamma[3,1]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 1,
+    lower_bound = 1,
+    upper_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p9 <- post %>%
+  select(`avg_Gamma[3,2]`, iter) %>%
+  mutate(value = `avg_Gamma[3,2]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 1,
+    lower_bound = 1,
+    upper_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p10 <- post %>%
+  select(`avg_Gamma[3,3]`, iter) %>%
+  mutate(value = `avg_Gamma[3,3]`) %>%
+  post_plot_2(
+    min = 0,
+    max = 1,
+    lower_bound = 1,
+    upper_bound = 1,
+    target_values = 0,
+    alpha_filling = 0.3,
+    alpha_outline = 0.8
+  )  +
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+(p1 + p2 + p3) /
+(plot_spacer() + p4 + p5) /
+(p6 + plot_spacer() + p7) /
+(p8 + p9 + p10)
+```
+
+# Posterior predictions
+
+## Holding times
+
+```{r, warning=FALSE, message=FALSE}
+# Observed holding times for j in {1, ..., J}
+  obs_ht <- tibble(
+    dyad = d$B_dyad,
+    s = d$B_s,
+    x = d$B_x,
+    c = d$B_c
+  )
+
+# theta posterior samples
+thetas <- post %>%
+  select(starts_with("theta[")) %>% 
+  slice(1:30) %>%
+  mutate(sample = 1:nrow(.)) %>%
+  gather(param, value, 1:(ncol(.) - 1)) %>%
+  extract(param, into = c("dyad", "s"), regex = "theta\\[(\\d+),(\\d+)\\]", convert = TRUE)
+
+
+post_pred_x <- list()
+for (spl in 1:30) {
+  post_pred_x[[spl]] <- obs_ht %>%
+    select(-x) %>%
+    left_join(thetas %>% filter(sample == spl)) %>%
+    mutate(x = rexp(nrow(.), 1 / value)) %>%
+    filter(x <= 40)
+}
+
+# We bin the observed holding times for plotting
+pp_x_tbl <- post_pred_x %>%
+  bind_rows() %>%
+  # Binning sequence
+  mutate(bin = sapply(x, function(val)
+    seq(2.5, 37.5, by = 5)[which.min(abs(seq(2.5, 37.5, by = 5) - val))])) %>%
+  group_by(s, sample, bin) %>%
+  summarise(count = n()) %>%
+  group_by(s, sample) %>%
+  # Fill in the zeros
+  complete(bin = seq(2.5, 37.5, by = 5), fill = list(count = 0)) %>%
+  ungroup()
+
+p1 <- obs_ht %>% filter(s == 1 & c == 0) %>%
+hist_plot(
+    colbin = "#c9c7bd",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 1),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#c9c7bd"
+  )
+
+p2 <- obs_ht %>% filter(s == 2 & c == 0) %>%
+hist_plot(
+    colbin = "#E9C4C1",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 2),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#d1a7a3"
+  )
+
+p3 <- obs_ht %>% filter(s == 3 & c == 0) %>%
+hist_plot(
+    colbin = "#ce8da6",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 3),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#a37184"
+  )
+
+p4 <- obs_ht %>% filter(s == 4 & c == 0) %>%
+hist_plot(
+    colbin = "#996282",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 4),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#7a4e68"
+  )
+```
+ 
+ 
+## Transitions 
+
+```{r, message=FALSE}
+obs_tr <- tibble(
+dyad = d$C_dyad,
+s_from = d$C_s_from
+)
+
+# gamma posterior samples
+gammas <- post %>%
+  select(starts_with("Gamma[")) %>% 
+  slice(1:30) %>%
+  mutate(sample = 1:nrow(.)) %>%
+  gather(param, value, 1:(ncol(.) - 1)) %>%
+  extract(param, into = c("dyad", "s_from", "s_to"), 
+          regex = "Gamma\\[(\\d+),(\\d+),(\\d+)\\]", convert = TRUE) %>%
+  pivot_wider(names_from = s_to, 
+              values_from = value, 
+              names_prefix = "s_to_")
+
+
+post_pred_tr <- list()
+for (spl in 1:30) {
+  post_pred_tr[[spl]] <- obs_tr %>%
+  left_join(gammas %>% filter(sample == spl)) %>%
+  mutate(s_to = mapply(function(s1, s2, s3, s4) sample(1:4, size = 1, prob = c(s1, s2, s3, s4)),
+                      s_to_1, s_to_2, s_to_3, s_to_4))
+  post_pred_tr[[spl]] <- post_pred_tr[[spl]] %>%
+  group_by(s_from, s_to) %>%
+  summarise(count = n()) %>%
+    mutate(sample = spl)
+}
+
+post_pred_tr_tbl <- post_pred_tr %>%
+  bind_rows() %>%
+  mutate(s_to = as.factor(s_to))
+
+obs_tr_smry <- obs_tr %>%
+  mutate(s_to = as.factor(d$C_s_to)) %>%
+  group_by(s_from, s_to) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+p5 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 1),
+  col_data = c("#E9C4C1", "#ce8da6", "#996282"),
+  col_post = c("#E9C4C1", "#ce8da6", "#996282"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 1)
+)
+
+p6 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 2),
+  col_data = c("#c9c7bd", "#ce8da6", "#996282"),
+  col_post = c("#ce8da6","#996282", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 2)
+)
+
+p7 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 3),
+  col_data = c("#c9c7bd", "#E9C4C1", "#996282"),
+  col_post = c("#E9C4C1", "#996282", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 3)
+)
+
+p8 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 4),
+  col_data = c("#c9c7bd", "#E9C4C1", "#ce8da6"),
+  col_post = c("#E9C4C1", "#ce8da6", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 4)
+)
+
+wrap_plots(p1, p5, p2, p6, 
+           p3, p7, p4, p8, ncol = 2)
+```
+
+ 

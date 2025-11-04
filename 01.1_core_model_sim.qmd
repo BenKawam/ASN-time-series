@@ -1,0 +1,1902 @@
+---
+title: "Core model (simulations)"
+format:
+  html: 
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We load a few packages and functions."
+# Packages
+  library(tidyverse)
+  library(tidybayes)
+  library(rethinking)
+  library(patchwork)
+  library(cmdstanr)
+  library(GGally)
+
+# dplyr options
+  options(dplyr.summarise.inform = FALSE)
+  
+# Functions
+  post_plot <- readRDS("./functions/post_plot.rds")
+  post_plot_2 <- readRDS("./functions/post_plot_2.rds")
+  plot_interval <- readRDS("./functions/plot_interval.rds")
+  hist_plot <- readRDS("./functions/hist_plot.rds")
+  binom_pmf <- readRDS("./functions/binom_pmf.rds")
+  hist_plot_simple <- readRDS("./functions/hist_plot_simple.rds")
+```
+
+# Generative model
+
+## Fixed parameters
+
+The intercepts $\alpha_{[g]}$: one intercept per group $g$.
+
+```{r}
+ a <- tibble(
+   "1" = c(log(4.5 * 12 * 60), log(4.8 * 12 * 60), log(5 * 12 * 60), log(5.2 * 12 * 60)),
+   "2" = c(log(4.8), log(4.5), log(4.2), log(4.1)),
+   "gr" = c(log(5.2), log(5.1), log(4.8), log(4.7)),
+   "1_gr" = c(-0.6, -0.65, -0.7, -0.75),
+   "2_gr" = c(-0.8, -0.9, -1, -1.1),
+   "gr_1" = c(0.4, 0.5, 0.55, 0.6),
+   "gr_2" = c(0.5, 0.6, 0.65, 0.75)
+ )
+```
+
+The effect of $U_{[a]}^{\text{dyad}}$ on $\phi$ are encoded using a vector of parameters $\beta_{\phi}$.
+The values $\beta_{\phi}$ are chosen such that dyads that spend less time in state $1$ (no body contact) spend longer in body contact and grooming ($S \in \{2, 3, 4\}$), and are more likely to transition from "affiliative" states ($S \in \{2, 3, 4\}$) than to "non-affiliative" ones ($S = 1$).
+
+```{r}
+b_phi <- tibble(
+  "1" = -0.5,
+  "2" = 0.5,
+  "give_gr" = 0.5,
+  "rec_gr" = 0.5,
+  "1_give_gr" = 0.1, 
+  "1_rec_gr" = 0.1, 
+  "2_give_gr" = 0.5,
+  "2_rec_gr" = 0.5,
+  "give_gr_1" = -0.5,
+  "give_gr_2" = -0.5,
+  "rec_gr_1" = -0.5,
+  "rec_gr_2" = -0.5
+)
+```
+
+The effect of $U_{[a, b]}^{\text{dyad}}$ (with $U_{[a, b]}^{\text{dyad}} = U_{[b, a]}^{\text{dyad}}$) on $\tau$ is similarly encoded with a vector $\beta_{\tau}$.
+
+```{r}
+b_tau <- tibble(
+  "1" = -0.5,
+  "2" = 0.5,
+  "gr" = 0.5,
+  "1_gr" = 0.5,
+  "2_gr" = 0.5,
+  "gr_1" = -0.5,
+  "gr_2" = -0.5
+)
+```
+
+## `stochastic_param`
+
+Given the population-level parameters $\alpha$, $\beta_{\phi}$, and $\beta_{\tau}$, we generate the average holding times $\theta_{[a, b, k]}$ and transition probabilities $\Gamma_{[a, b, k, l]}$.
+The `stochastic_param` roughly encodes the causal relationship between, on the one hand, $U^{\text{group}}_{[g]}$, $U^{\text{ind}}_{[a]}$, $U^{\text{ind}}_{[b]}$, and $U^{\text{dyad}}_{[a, b]}$, and, on the other hand, $\theta_{[a, b, k]}$ and $\Gamma_{[a, b, k, l]}$, shown at the top-left of our plated causal diagram (Figure 4).
+
+```{r}
+stochastic_param <- function(
+  N_ind_vec = c(3, 4, 3),
+  N_group = length(N_ind_vec),
+  N_dyad_vec = ((N_ind_vec * N_ind_vec) - N_ind_vec) / 2,
+  alpha = a,
+  beta_phi = b_phi,
+  beta_tau = b_tau,
+  sigma_U_ind = 0.5,
+  sigma_U_dyad = 0.5,
+  sigma_ups_ind = 0.1,
+  sigma_ups_dyad = 0.1) {
+  
+  params <- list()
+  
+  for (group in 1:N_group) {
+    # Nb of ind and dyads in the group
+    N_ind <- N_ind_vec[group]
+    N_dyad <- N_dyad_vec[group]
+    
+    ## 1. list of all dyads
+    dyads <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      dyad_id = c(1:N_dyad)
+    )
+    
+    ## 2. Exogenous variation
+    # U
+    U_ind <- rnorm(N_ind, 0, sigma_U_ind)
+    U_dyad <- rnorm(N_dyad, 0, sigma_U_dyad)
+    
+    # upsilon individual (variation not caused by U)
+    ups_ind <- tibble(
+      "1" = rnorm(N_ind, 0, sigma_ups_ind),
+      "2" = rnorm(N_ind, 0, sigma_ups_ind),
+      "give_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "rec_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "1_give_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "1_rec_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "2_give_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "2_rec_gr" = rnorm(N_ind, 0, sigma_ups_ind),
+      "give_gr_1" = rnorm(N_ind, 0, sigma_ups_ind),
+      "give_gr_2" = rnorm(N_ind, 0, sigma_ups_ind),
+      "rec_gr_1" = rnorm(N_ind, 0, sigma_ups_ind),
+      "rec_gr_2" = rnorm(N_ind, 0, sigma_ups_ind),
+    )
+    
+    # upsilon dyad (variation not caused by U)
+    ups_dyad <- tibble(
+      "1" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "2" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "1_gr_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "1_gr_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "2_gr_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "2_gr_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_1_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_2_ab" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_1_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+      "gr_2_ba" = rnorm(N_dyad, 0, sigma_ups_dyad),
+    )
+    
+    ## 3. phi
+    phi <- tibble(
+      "1" = beta_phi$`1` * U_ind + ups_ind$`1`,
+      "2" = beta_phi$`2` * U_ind + ups_ind$`2`,
+      "give_gr" = beta_phi$`give_gr` * U_ind + ups_ind$`give_gr`,
+      "rec_gr" = beta_phi$`rec_gr` * U_ind + ups_ind$`rec_gr`,
+      "1_give_gr" = beta_phi$`1_give_gr` * U_ind + ups_ind$`1_give_gr`,
+      "1_rec_gr" = beta_phi$`1_rec_gr` * U_ind + ups_ind$`1_rec_gr`,
+      "2_give_gr" = beta_phi$`2_give_gr` * U_ind + ups_ind$`2_give_gr`,
+      "2_rec_gr" = beta_phi$`2_rec_gr` * U_ind + ups_ind$`2_rec_gr`,
+      "give_gr_1" = beta_phi$`give_gr_1` * U_ind + ups_ind$`give_gr_1`,
+      "give_gr_2" = beta_phi$`give_gr_2` * U_ind + ups_ind$`give_gr_2`,
+      "rec_gr_1" = beta_phi$`rec_gr_1` * U_ind + ups_ind$`rec_gr_1`,
+      "rec_gr_2" = beta_phi$`rec_gr_2` * U_ind + ups_ind$`rec_gr_2`,
+    )
+    
+    ## 4. tau
+    tau <- tibble(
+      "1" = beta_tau$`1` * U_dyad + ups_dyad$`1`,
+      "2" = beta_tau$`2` * U_dyad + ups_dyad$`2`,
+      "gr_ab" = beta_tau$`gr` * U_dyad + ups_dyad$`gr_ab`,
+      "gr_ba" = beta_tau$`gr` * U_dyad + ups_dyad$`gr_ba`,
+      "1_gr_ab" = beta_tau$`1_gr` * U_dyad + ups_dyad$`1_gr_ab`,
+      "1_gr_ba" = beta_tau$`1_gr` * U_dyad + ups_dyad$`1_gr_ba`,
+      "2_gr_ab" = beta_tau$`2_gr` * U_dyad + ups_dyad$`2_gr_ab`,
+      "2_gr_ba" = beta_tau$`2_gr` * U_dyad + ups_dyad$`2_gr_ba`,
+      "gr_1_ab" = beta_tau$`gr_1` * U_dyad + ups_dyad$`gr_1_ab`,
+      "gr_2_ab" = beta_tau$`gr_2` * U_dyad + ups_dyad$`gr_2_ab`,
+      "gr_1_ba" = beta_tau$`gr_1` * U_dyad + ups_dyad$`gr_1_ba`,
+      "gr_2_ba" = beta_tau$`gr_2` * U_dyad + ups_dyad$`gr_2_ba`,
+    )
+    
+    
+    ## 5. theta
+    theta <- array(data = NA, dim = c(N_dyad, 4))
+    for (dyad in 1:N_dyad) {
+      theta[dyad, 1] <- exp(alpha$`1`[group] +
+                              phi$`1`[dyads$ind_a[dyad]] +
+                              phi$`1`[dyads$ind_b[dyad]] +
+                              tau$`1`[dyad])
+      
+      theta[dyad, 2] <- exp(alpha$`2`[group] +
+                              phi$`2`[dyads$ind_a[dyad]] +
+                              phi$`2`[dyads$ind_b[dyad]] +
+                              tau$`2`[dyad])
+      
+      theta[dyad, 3] <- exp(alpha$`gr`[group] +
+                              phi$`give_gr`[dyads$ind_a[dyad]] +
+                              phi$`rec_gr`[dyads$ind_b[dyad]] +
+                              tau$gr_ab[dyad])
+      
+      theta[dyad, 4] <- exp(alpha$`gr`[group] +
+                              phi$`rec_gr`[dyads$ind_a[dyad]] +
+                              phi$`give_gr`[dyads$ind_b[dyad]] +
+                              tau$`gr_ba`[dyad])
+    } # dyad
+    
+    ## 5.Psi
+    Psi <- array(data = NA, dim = c(4, 4, N_dyad))
+    for (dyad in 1:N_dyad) {
+      # We fill the matrix Psi row by row
+      # Firs row
+     Psi[1, 2, dyad] <- 0
+     Psi[1, 3, dyad] <- alpha$`1_gr`[group] +
+        phi$`1_give_gr`[dyads$ind_a[dyad]] +
+        phi$`1_rec_gr`[dyads$ind_b[dyad]] +
+        tau$`1_gr_ab`[dyad]
+     Psi[1, 4, dyad] <- alpha$`1_gr`[group] +
+        phi$`1_rec_gr`[dyads$ind_a[dyad]] +
+        phi$`1_give_gr`[dyads$ind_b[dyad]] +
+        tau$`1_gr_ba`[dyad]
+      
+      # Second row
+     Psi[2, 1, dyad] <- 0
+     Psi[2, 3, dyad] <- alpha$`2_gr`[group] +
+        phi$`2_give_gr`[dyads$ind_a[dyad]] +
+        phi$`2_rec_gr`[dyads$ind_b[dyad]] +
+        tau$`2_gr_ab`[dyad]
+     Psi[2, 4, dyad] <- alpha$`2_gr`[group] +
+        phi$`2_rec_gr`[dyads$ind_a[dyad]] +
+        phi$`2_give_gr`[dyads$ind_b[dyad]] +
+        tau$`2_gr_ba`[dyad]
+      
+      # Third row
+      Psi[3, 1, dyad] <- alpha$`gr_1`[group] +
+        phi$`give_gr_1`[dyads$ind_a[dyad]] +
+        phi$`rec_gr_1`[dyads$ind_b[dyad]] +
+        tau$`gr_1_ab`[dyad]
+      Psi[3, 2, dyad] <- alpha$`gr_2`[group] +
+        phi$`give_gr_2`[dyads$ind_a[dyad]] +
+        phi$`rec_gr_2`[dyads$ind_b[dyad]] +
+        tau$`gr_2_ab`[dyad]
+      Psi[3, 4, dyad] <- 0
+      
+      # Fourth row
+      Psi[4, 1, dyad] <- alpha$`gr_1`[group] +
+        phi$`give_gr_1`[dyads$ind_b[dyad]] +
+        phi$`rec_gr_1`[dyads$ind_a[dyad]] +
+        tau$`gr_1_ba`[dyad]
+      Psi[4, 2, dyad] <- alpha$`gr_2`[group] +
+        phi$`give_gr_2`[dyads$ind_b[dyad]] +
+        phi$`rec_gr_2`[dyads$ind_a[dyad]] +
+        tau$`gr_2_ba`[dyad]
+      Psi[4, 3, dyad] <- 0
+    } # ind
+    
+    ## 6. Gamma
+    Gamma <- array(data = NA, dim = c(4, 4, N_dyad))
+    for (dyad in 1:N_dyad) {
+      for (k in 1:4) {
+        # Zero diagonal
+        Gamma[k, k, dyad] <- 0
+      } # end for k
+      
+      # Row 1
+      for (k in 2:4) {
+        Gamma[1, k, dyad] <- exp(Psi[1, k, dyad]) /
+          sum(exp(Psi[1, , dyad]), na.rm = T)
+      } # end for k
+      
+      # Row 2
+      for (k in c(1, 3, 4)) {
+        Gamma[2, k, dyad] <- exp(Psi[2, k, dyad]) /
+          sum(exp(Psi[2, , dyad]), na.rm = T)
+      } # end for k
+      
+      # Row 3
+      for (k in c(1, 2, 4)) {
+        Gamma[3, k, dyad] <- exp(Psi[3, k, dyad]) /
+          sum(exp(Psi[3, , dyad]), na.rm = T)
+      } # end for k
+      
+      # Row 4
+      for (k in 1:3) {
+        Gamma[4, k, dyad] <- exp(Psi[4, k, dyad]) /
+          sum(exp(Psi[4, , dyad]), na.rm = T)
+      } # end for k
+    } # end for dyad
+    
+    params[[group]] <- list(
+      dyads = dyads,
+      U_ind = U_ind,
+      U_dyad = U_dyad,
+      ups_ind = ups_ind,
+      ups_dyad = ups_dyad,
+      phi = phi,
+      tau = tau,
+      theta = theta,
+      Psi = Psi,
+      Gamma = Gamma
+    )
+  } # end for group
+  
+  params %>% return()
+} # end stochastic_param
+```
+
+Let's run the `stochastic_param` to inspect what part of its output (*i.e.* $\theta_{[g]}$ and $\Gamma_{[g]}$ for $g = 1$) looks like.
+
+```{r}
+stochastic_param_ex <- stochastic_param(N_ind_vec = c(3, 4))
+stochastic_param_ex[[1]]$theta
+stochastic_param_ex[[1]]$Gamma
+```
+
+### Plotting
+
+We run `stochastic_param` and reformat the result for plotting.
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show code:"
+# For three groups of 10 individuals
+stochastic_param_ex <- stochastic_param(N_ind_vec = c(10, 10, 10))
+
+# Reformat Gamma
+Gamma_long <- array(data = NA, dim = c(4, 4, 135))
+Gamma_long[, , 1:45] <- stochastic_param_ex[[1]]$Gamma
+Gamma_long[, , 46:90] <- stochastic_param_ex[[2]]$Gamma
+Gamma_long[, , 91:135] <- stochastic_param_ex[[3]]$Gamma
+
+Gamma_long <- Gamma_long %>% 
+  as.data.frame.table(responseName = "value")
+colnames(Gamma_long) <- c("row", "col", "level", "value")
+
+# Ensure Row and Col are numeric
+Gamma_long$row <- as.numeric(Gamma_long$row)
+Gamma_long$col <- as.numeric(Gamma_long$col)
+
+# Parameter values of gamma and theta for all dyads
+params <- tibble(
+  "θ[a,b,1]" = sapply(stochastic_param_ex, function(x) x$theta[,1]) %>% c(),
+  "θ[a,b,2]" = sapply(stochastic_param_ex, function(x) x$theta[,2]) %>% c(),
+  "θ[a,b,3]" = sapply(stochastic_param_ex, function(x) x$theta[,3]) %>% c(),
+  "θ[a,b,4]" = sapply(stochastic_param_ex, function(x) x$theta[,4]) %>% c(),
+  "Γ[a,b,1,2]" = Gamma_long %>% filter(row == 1 & col == 2) %>% pull(value),
+  "Γ[a,b,1,3]" = Gamma_long %>% filter(row == 1 & col == 3) %>% pull(value),
+  "Γ[a,b,1,4]" = Gamma_long %>% filter(row == 1 & col == 4) %>% pull(value),
+  "Γ[a,b,2,1]" = Gamma_long %>% filter(row == 2 & col == 1) %>% pull(value),
+  "Γ[a,b,2,3]" = Gamma_long %>% filter(row == 2 & col == 3) %>% pull(value),
+  "Γ[a,b,2,4]" = Gamma_long %>% filter(row == 2 & col == 4) %>% pull(value),
+  "Γ[a,b,3,1]" = Gamma_long %>% filter(row == 3 & col == 1) %>% pull(value),
+  "Γ[a,b,3,2]" = Gamma_long %>% filter(row == 3 & col == 2) %>% pull(value),
+  "Γ[a,b,3,4]" = Gamma_long %>% filter(row == 3 & col == 4) %>% pull(value),
+  "Γ[a,b,4,1]" = Gamma_long %>% filter(row == 4 & col == 1) %>% pull(value),
+  "Γ[a,b,4,2]" = Gamma_long %>% filter(row == 4 & col == 2) %>% pull(value),
+  "Γ[a,b,4,3]" = Gamma_long %>% filter(row == 4 & col == 3) %>% pull(value)
+)
+```
+
+Plotting functions that will be used for a composite plot:
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show code:"
+# scatter plot function
+scatter <- function(data, mapping, ...) {
+  ggplot(data, mapping) +
+    geom_point(fill = "#9e6a7d",
+               pch = 21,
+               colour = "white",
+               size = 2,
+               alpha = 0.2) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      strip.text = element_text()
+    ) +
+    scale_x_continuous(expand = expansion(mult = 0.5)) +
+    scale_y_continuous(expand = expansion(mult = 0.5))
+}
+
+# density function
+density <- function(data, mapping, ...) {
+  ggplot(data, mapping) +
+    stat_slab(
+      slab_color = NA,
+      fill = "#9e6a7d",
+      scale = 0.8,
+      normalize = "groups",
+      trim = FALSE,
+      slab_alpha = 0.2) +
+    
+    # Contour of slab
+    stat_slab(
+      slab_color = "#363533",
+      fill = NA,
+      slab_linewidth = 0.4,
+      scale = 0.8,
+      normalize = "groups",
+      slab_alpha = 0.3,
+      trim = FALSE
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      strip.text = element_text()
+    ) +
+    scale_x_continuous(expand = expansion(mult = 0.5)) +
+    scale_y_continuous(expand = expansion(mult = 0.5))
+}
+```
+
+We run `scatter` and `density` to display the distributions of all stochastic parameters and their pairwise association.
+(We do not display the resulting figure in the Quarto notebooks, but it can be found in the supplementary materials of the associated paper.)
+
+```{r, eval = FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 7
+# theta
+ggpairs(
+  params,
+  lower = list(continuous = scatter),
+  diag = list(continuous = density),
+  upper = list(continuous = "blank")
+) +
+  theme(panel.grid.major.y = element_blank(),
+        strip.background = element_blank())
+```
+
+We can also represent the distribution of generative parameters (in particular, $\Gamma$), in the following way:
+
+```{r, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 7
+# Filter out diagonal elements
+Gamma_long <- Gamma_long[Gamma_long$row != Gamma_long$col, ]
+
+# Convert rows and columns to factors for faceting
+Gamma_long$Row <- factor(Gamma_long$row, levels = 1:4)
+Gamma_long$Col <- factor(Gamma_long$col, levels = 1:4)
+
+# Plot
+ggplot(Gamma_long, aes(x = value)) +
+  geom_histogram(aes(y = ..density..), 
+                 breaks = seq(0, 1, by = 0.1),
+                 fill = "#27495c", 
+                 color = "#f7f7f0",
+                 alpha = 0.7) +
+  facet_grid(row ~ col, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = " ",
+    x = " ",
+    y = " "
+  ) +
+  # Layout
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(vjust = 0),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.border = element_rect(color = "black"),
+      strip.background = element_rect(fill = "white", color = "white"),
+      plot.margin = margin(0, 0, 0, 0, "cm"),
+    ) +
+  # Lower bound
+    annotate(
+      xmin = -0.1 * (1 - 0),
+      xmax = 0,
+      ymin = -Inf,
+      ymax = Inf,
+      geom = "rect",
+      fill = "#f5f2ed"
+    ) +
+    geom_vline(
+      xintercept = 0,
+      color = "#b8b5ab",
+      linewidth = 0.3,
+      linetype = "dotted"
+    ) +
+    geom_hline(
+      yintercept = 0,
+      color = "#b8b5ab",
+      linewidth = 0.3,
+      linetype = "dotted"
+    ) +
+    scale_x_continuous(
+      limits = c(-0.1 * (1 - 0),
+                 1 + 0.1 * (1 - 0)),
+      expand = c(0, 0),
+      breaks = c(0, 0.5, 1)
+    ) +
+       # upper bound
+      annotate(
+        xmin = 1,
+        xmax = 1 + 0.1 * (1 - 0),
+        ymin = -Inf,
+        ymax = Inf,
+        geom = "rect",
+        fill = "#f5f2ed"
+      ) +
+      geom_vline(
+        xintercept = 1,
+        color = "#b8b5ab",
+        linewidth = 0.3,
+        linetype = "dotted"
+      )
+```
+
+## `ctmc`
+
+Now that we have the parameters $\theta$ and $\Gamma$ for each dyad, we can specify how these parameters give rise to social interactions.
+The `ctmc` function produces the latent sequence of sojourns $i$ for the dyads under study.
+The function takes as input: 
+(i) the number of individuals per group; 
+(ii) the amount of time the function should run for per group; 
+(iii) params, generated by `stochastic_param`.
+As output, it produces a list, where the first level is group, and the second level is a data frame containing all of the the sojourns $i$ for a given dyad.
+This function corresponds to **Algorithm 1**, in the supplemantary materials of the associated manuscript.
+
+```{r}
+ctmc <- function(N_ind_vec = c(3, 3, 4),
+                 N_groups = length(N_ind_vec),
+                 N_dyad_vec = ((N_ind_vec * N_ind_vec) - N_ind_vec) / 2,
+                 params,
+                 end_sim = c(1e3, 1e3, 1e3),
+                 ...) {
+  
+  # First level of df is group
+  df <- list()
+  
+  for (group in 1:N_groups) {
+    # Second level of df is dyad
+    df[[group]] <- list()
+    N_dyad <- N_dyad_vec[group]
+    
+    # Next, we draw sojourns, each of which is made of two rows
+    # one for its start, one for its end
+    for (dyad in 1:N_dyad) {
+      ## 1. First sojourn (state 1)
+      (df[[group]][[dyad]] <- tibble(
+        id = c(1, 1),          # observation id
+        x = rexp(1, 1 / params[[group]]$theta[dyad, 1]) %>% rep(2), # holding time
+        t = c(0, x[1]),        # time stamps
+        s = c(1, 1),           # state
+        z = c("start", "end"), # modifier
+        c = 0                  # censoring level
+      ))
+      
+      ## 2. Run the CTMC
+      repeat {
+        last_state <- df[[group]][[dyad]]$s %>% last()
+        # Draw new state from a multinomial distribution
+        new_state <- 
+          rmultinom(1, 1, params[[group]]$Gamma[, , dyad][last_state,]) %>%
+          which.max()
+        
+        # Next sojourn
+        df[[group]][[dyad]] <- df[[group]][[dyad]] %>%
+          add_row(
+            id = df[[group]][[dyad]]$id %>% last() + 1,
+            x = rexp(1, 1 / params[[group]]$theta[dyad, new_state]),
+            t = df[[group]][[dyad]]$t %>% last(),
+            s = new_state,
+            z = "start",
+            c = 0
+          )
+        df[[group]][[dyad]] <- df[[group]][[dyad]] %>%
+          add_row(
+            id = df[[group]][[dyad]]$id %>% last(),
+            x = df[[group]][[dyad]]$x %>% last(),
+            t = (df[[group]][[dyad]]$t %>% last()) +
+              last(df[[group]][[dyad]]$x),
+            s = df[[group]][[dyad]]$s %>% last(),
+            z = "end",
+            c = 0
+          )
+        
+        # break if we're after the maximal time
+        if (tail(df[[group]][[dyad]]$t, 1) >= end_sim[group]) {
+          break
+        } # end if
+      } # end break
+    } # end for dyad
+  } # end for group
+  df %>% return()
+} # end ctmc
+```
+
+For example, `seq_states_ex[[1]][[2]]`, printed below, represents the sequence of sojourns that take place for the second dyad in the first group, up to a certain time limit $t = 5000$ time units.
+
+```{r}
+set.seed(2666)
+params <- stochastic_param(N_ind_vec = c(3, 4))
+(seq_states_ex <- ctmc(N_ind_vec = c(3, 4), params = params, end_sim = c(5e3, 5e3)))
+```
+
+
+## `d_ff`
+
+Now that we can generate the true dyadic behavioural sojourns with `ctmc`, we can introduce *measurement*.
+`d_ff` does this by creating a set of dyadic focal follow, i.e. it cuts a 40 minutes windows from the latent sequence of states generated with `ctmc` for each dyad under consideration. 
+It takes as inputs: 
+(i) The output from `ctmc`: a list of data frames, where each data frame encodes the true sequences of sojourns $i$. 
+(ii) Two time stamps: the starting time and the end time for a 40 min focal follow.
+As outputs, the function returns a list of data frames, where each data frame contains the sojourns $j$ that are basically the observations $i$ from input (i) in between the time stamps given by input (ii).
+`d_ff` corresponds to **Algorithm 2**, in the supplemantary materials of the associated manuscript.
+
+Note that in the next two functions, the censoring level `c` is related to the variable $C$ described in the paper, but somewhat deviates from it.
+
+```{r}
+d_ff <- function(df, start_focal, end_focal){
+for (dyad in 1:length(df)){
+# Censor the start of the dyadic focal follow 
+# i.e. we cut anything before start_focal 
+  df[[dyad]] <- df[[dyad]] %>%
+  add_row(t = start_focal, c = 1) %>% # c = 1 means we don't know the star time
+  add_row(t = end_focal, c = 2) %>%   #c = 2 means we don't know the end time
+  arrange(t)  %>%
+  mutate(
+    id = case_when(
+      c == 1 ~ lag(id),
+      c == 2 ~ lead(id),
+      TRUE ~ id
+    ),
+    s = case_when(
+      c == 1 ~ lag(s),
+      c == 2 ~ lead(s),
+      TRUE ~ s
+    ),
+    z = case_when(
+      c == 1 ~ "start",
+      c == 2 ~ "end",
+      TRUE ~ z
+    ),
+    x = case_when(
+      c == 1 ~ lead(t) - start_focal,
+      c == 2 ~ end_focal - lag(t),
+      TRUE ~ x
+    )
+  ) %>% group_by(id) %>%
+  mutate(
+    x = case_when(
+      sum(c) == 0 ~ x,                                       
+      sum(c) %in% c(1, 2) ~ x[2],
+      sum(c) == 3 ~ end_focal - start_focal                           
+    )
+  ) %>%
+  ungroup() %>% 
+  filter(t >= start_focal & t <= end_focal)
+  } # end for i
+  
+  return(df)
+} # end d_ff
+```
+
+For example:
+
+```{r}
+# Before cutting
+  seq_states_ex[[2]][5:6]
+
+# After cutting
+ seq_states_ex[[2]][5:6] %>% d_ff(start_focal = 820, end_focal = 860)
+```
+
+## `sim`
+
+The `sim function` takes, as input, a set of stochastic parameters generated with `stochastic_param`, as well as the number of focal follows, burnin period, and focal duration.
+It produces, as output, behavioural observations that can be fitted to a Stan model.
+
+```{r}
+sim <- function(N_ind_vec,
+                N_group = length(N_ind_vec),
+                N_dyad_vec = ((N_ind_vec * N_ind_vec) - N_ind_vec) / 2,
+                parameters,
+                n_focals_vec = N_ind_vec * 10,
+                burnin = 1e3,
+                duration_focal = 40,
+                end_sim_vec = burnin + n_focals_vec * duration_focal) {
+  ## 1. Define a number of objects
+  dyads <- list()     # list of dyads and individuals per group
+  sim_data <- list()  # simulated observations (sojourns in states per dyad)
+  d <- list()         # summary of sim_data
+  
+  ## 2. We run ctmc for each group
+  state_seq <- ctmc(N_ind_vec = N_ind_vec,
+                    params = parameters,
+                    end_sim = end_sim_vec)
+  
+  for (group in 1:N_group) {
+    ## 3. Define individuals & dyads
+    # We give individuals unique name across groups
+    # e.g. 1:10 (group 1), 11:20 (group 2), etc.
+    bl_ind <- c(0, head(N_ind_vec, -1))[1:group] %>% sum()
+    bl_dyad <- c(0, head(N_dyad_vec, -1))[1:group] %>% sum()
+    N_ind <- N_ind_vec[group]
+    dyads[[group]] <- tibble(
+      grp = group,
+      ind_a = bl_ind + t(combn(N_ind, 2))[, 1],
+      ind_b = bl_ind + t(combn(N_ind, 2))[, 2],
+      dyad_id = bl_dyad + c(1:N_dyad_vec[group])
+    )
+    
+    
+    ## 4. Define sequence of focal follows for each group
+    # 4.1 Sequence of individuals ids to focal by group
+    # We make sure to focal each individual at least once
+    focal_ind <- bl_ind + c(1:N_ind)
+    
+    # For the remaining focal-follows, we draw individuals at random
+    focal_ind[(N_ind + 1):n_focals_vec[group]] <-
+      sample(x = bl_ind + 1:N_ind,
+             size = n_focals_vec[group] - N_ind,
+             replace = TRUE)
+    
+    # 4.2 We mark the start time of the focal-follows
+    time_stamps <- seq(from = burnin, to = end_sim_vec[[group]], by = duration_focal)
+    
+    dyads_to_sample <- list()    # dyads to sample for each focal follow
+    sim_data[[group]] <- list()  # observed sequence of states
+    d[[group]] <- list()
+    
+    # for each individual focal follow
+    for (focal in 1:n_focals_vec[group]) {
+      # sim_data is indexed by (i) group; (ii) ind. focal follow; (iii) dyad.
+      sim_data[[group]][[focal]] <- list()
+      d[[group]][[focal]] <- list()
+      
+      ## 5. We conduct the focal follows per se
+      # Which *dyads* are we practically following for each ind. focal-follow
+      dyads_to_sample[[focal]] <- dyads[[group]] %>%
+        filter(ind_a == focal_ind[focal] |
+                 ind_b == focal_ind[focal]) %>%
+        pull(dyad_id)
+      
+      # We select the latent state sequence of interest
+      sim_data[[group]][[focal]] <- 
+        state_seq[[group]][dyads_to_sample[[focal]] - bl_dyad]
+      
+      # We cut the windows corresponding to focal-follows
+      sim_data[[group]][[focal]] <- d_ff(sim_data[[group]][[focal]],
+                                         time_stamps[focal],
+                                         time_stamps[focal] + duration_focal)
+      
+   
+      # for each dyad
+      for (dyad in 1:(N_ind - 1)) {
+        ## add name of focal individual and focal dyad for each
+        sim_data[[group]][[focal]][[dyad]] <-
+          sim_data[[group]][[focal]][[dyad]] %>%
+          mutate(focal_id = focal_ind[focal],
+                 focal_dyad = dyads_to_sample[[focal]][dyad])
+        
+        ## 6. Summarise each sojourn by a few variables
+        d[[group]][[focal]][[dyad]] <-
+          sim_data[[group]][[focal]][[dyad]] %>%
+          group_by(id) %>%            # for each state sojourn id
+          summarize(
+            grp = group,              # grp id
+            x = first(x),             # holding time
+            s = first(s),             # state
+            c = ifelse(sum(c) < 2, 0, 1),# censoring = {0, 1}
+            dyad = first(focal_dyad), # id of dyad
+            focal_id = first(focal_id), # id of focal individual
+            prot_id = focal           # id of the protocol          
+          ) %>%
+          select(-id)
+      } # end dyad
+    } # end for focal
+    
+    d[[group]] <- d[[group]] %>% bind_rows()
+  } # end for group
+  
+  ## 7. We collapse the sojourn data
+  d <- d %>%
+    bind_rows() %>%
+    group_by(grp, focal_id, dyad, prot_id) %>%
+    # add a unique identifier per dyadic focal follow
+    mutate(prot_id = cur_group_id()) %>%
+    ungroup() %>%
+    arrange(prot_id)
+  
+  ## 8. Transitions
+  obs_tr <- tibble(
+    grp = head(d$grp, -1),
+    dyad_id = head(d$dyad, -1),
+    prot_id_from = head(d$prot_id, -1),
+    prot_id_to = tail(d$prot_id, -1),
+    s_from = head(d$s, -1),
+    s_to = tail(d$s, -1)
+  ) %>%
+    filter(prot_id_from == prot_id_to) %>%
+    select(-c(prot_id_from, prot_id_to))
+  
+  ## 9. Exposure and "events" in each state
+  exp_events <- d %>%
+    mutate(observed = ifelse(c == 0, 1, 0)) %>%
+    group_by(dyad, s) %>%
+    # Amount of time spent in each state
+    summarise(exposure = sum(x),
+              # how many times have we observed the end?
+              events = sum(observed)) %>%
+    right_join(expand.grid(dyad = 1:sum(N_dyad_vec),
+                           s = 1:4)) %>%
+    arrange(dyad, s) %>%
+    mutate_at(c("exposure", "events"), ~ replace_na(., 0))
+  
+  # Stan-friendly format
+  list <- list()
+  
+  # General indices
+  list$N_dyad <- sum(N_dyad_vec)
+  list$N_ind <- sum(N_ind_vec)
+  list$N_group <- N_group
+  list$N_ind_per_group <- N_ind_vec
+  list$N_dyad_per_group <- N_dyad_vec  
+  
+  # Individuals and dyads (dataset "A")
+  list$A_grp <- bind_rows(dyads)$grp
+  list$A_ind_a <- bind_rows(dyads)$ind_a
+  list$A_ind_b <- bind_rows(dyads)$ind_b
+  list$A_dyad <- bind_rows(dyads)$dyad_id
+  
+  # Observations j: sequence of states (dataset "B")
+  list$J <- bind_rows(d) %>% nrow()
+  list$B_grp <- d$grp
+  list$B_x <- d$x
+  list$B_s <- d$s
+  list$B_c <- d$c
+  list$B_dyad <- d$dyad
+  
+  # Observed transitions (dataset "C")
+  list$N_trans <- nrow(obs_tr)
+  list$C_grp <- obs_tr$grp
+  list$C_dyad <- obs_tr$dyad_id
+  list$C_s_from <- obs_tr$s_from
+  list$C_s_to <- obs_tr$s_to
+  
+  # Observed exposure time and count of events in each state (dataset "D")
+  list$N_row_D <- nrow(exp_events)
+  list$D_dyad <- exp_events$dyad
+  list$D_s <- exp_events$s
+  list$D_exposure <- exp_events$exposure
+  list$D_events <- exp_events$events
+
+  list %>% return()  
+} # end sim
+```
+
+## Run `sim`
+
+We run `sim` for four groups of ten individuals, conducting $1500$ focal follows for each group. 
+
+```{r, eval = FALSE}
+param_1 <- list() # stochastic parameters
+d_1 <- list()     # simulated data
+
+set.seed(247)
+for (i in 1:10) {
+   param_1[[i]] <- stochastic_param(N_ind_vec = c(10, 10, 10, 10))
+
+   d_1[[i]] <- sim(N_ind_vec = c(10, 10, 10, 10),
+    n_focals_vec = c(1500, 1500, 1500, 1500),
+    parameters = param_1[[i]])
+}
+
+# We save the data
+  param_1 %>% saveRDS("./sim_data/01/param_1.rds")
+  d_1 %>% saveRDS("./sim_data/01/d_1.rds")
+```
+
+# Observed distributions
+
+Import the generate data:
+```{r}
+# Import data
+  d_1 <- readRDS("./sim_data/01/d_1.rds")
+```
+
+We plot the number of observations $j$ per dyad $(a, b)$ and per state $k$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+tibble(
+ focal_dyad = d_1[[1]]$B_dyad,
+ S = d_1[[1]]$B_s
+) %>%
+  group_by(focal_dyad, S) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  complete(focal_dyad, S, fill = list(count = 0)) %>%
+  mutate(S = paste0("S = ", S)) %>%
+  
+    ggplot(aes(x = count)) +
+  geom_histogram(
+      col = "#f7f7f0",
+      linewidth = 0.5,
+      fill = "#acbfb7",
+      bins = 10
+    ) +
+    stat_bin(
+      bins = 10,
+      geom = "text",
+      aes(label = after_stat(
+        if_else (condition = count > 0 & count < 4,
+                 as.character(count), "")
+      )),
+      vjust = -1,
+      size = 2,
+      col = "#4d4d4d"
+    ) +
+  facet_wrap(~ S, scale = "free_x", ncol = 5) +
+
+  theme_bw() +
+    theme(
+      axis.text.x = element_text(vjust = 0),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.y = element_line(
+        color = "#ccccc0",
+        linewidth = 0.3,
+        linetype = "dotted"
+      ),
+      panel.border = element_blank(),
+      panel.spacing = unit(2, "lines"),
+      strip.background = element_rect(fill = "white", color = "white"),
+      plot.margin = margin(0, 1, 0, 0, "cm"),
+    ) +
+    labs(y = "", x = "")
+```
+
+For instance, consider the panel on the left-hand side (`S = 1`).
+We observe that a high number of dyads have about $\simeq 300$ observations $j$ in state $k = 1$.
+In contrast, very few dyads have more than $\simeq 340$ samples in state $k = 1$.
+
+Now, let us plot the number of observed transitions per transition types $k \to l$ and per dyad $(a, b)$:
+```{r}
+#| fig-width: 9
+#| fig-height: 9
+tibble(
+  dyad = d_1[[1]]$C_dyad,
+  S_from = d_1[[1]]$C_s_from,
+  S_to = d_1[[1]]$C_s_to
+) %>%
+  group_by(dyad, S_from, S_to) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  complete(dyad, S_from, S_to, fill = list(count = 0)) %>%
+  mutate(S = paste0("S = ", S_from, " to S = ", S_to)) %>%
+
+ggplot(aes(x = count)) +
+  geom_histogram(
+    col = "#f7f7f0",
+    linewidth = 0.5,
+    fill = "#acbfb7",
+    binwidth = 1,
+    boundary = -0.5
+  ) +
+
+  stat_bin(
+    binwidth = 1,
+    boundary = -0.5,
+    geom = "text",
+    aes(label = after_stat(
+      if_else (condition = count > 0 & count < 4,
+               as.character(count), "")
+    )),
+    vjust = -1,
+    size = 2,
+    col = "#4d4d4d"
+  ) +
+  scale_x_continuous(
+    breaks = seq(0, 10, by = 2),
+    limits = c(-0.5, 10.5)
+  ) +  facet_wrap(~ S, scale = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(vjust = 0),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major.y = element_line(
+      color = "#ccccc0",
+      linewidth = 0.3,
+      linetype = "dotted"
+    ),
+    panel.border = element_rect(fill = "transparent", color = "#ccccc0"),
+    panel.spacing = unit(1, "lines"),
+    strip.background = element_rect(fill = "white", color = "white"),
+    plot.margin = margin(0, 1, 0, 0, "cm")
+  ) +
+  labs(y = "", x = "")
+```
+
+
+# Statistical model
+
+```{r}
+# Stan model
+  (m_1 <- cmdstan_model("./stan_models/core_model.stan"))
+```
+
+## MCMC
+
+We run the Stan models, obtaining MCMC samples of the posterior distribution.
+
+```{r, eval = FALSE}
+# We define lists
+  post_1 <- list()
+  
+# Import data
+  d_1 <- readRDS("./sim_data/01/d_1.rds")
+  
+# Model without transformed parameters
+  for(i in 1:10){
+  post_1[[i]] <- m_1$sample(
+    data = d_1[[i]],
+    iter_warmup = 1e3,
+    iter_sampling = 1e3,
+    chains = 4,
+    parallel_chains = 4
+  )
+  
+  if(i == 1){diag_1 <- post_1[[i]]$summary()}
+
+  # Extract posterior samples
+   post_1[[i]] <- post_1[[i]] %>%
+     tidy_draws() %>%
+     mutate(iter = i)
+  }
+
+# We reformat the posterior and save it
+  post_1 %>%
+    bind_rows() %>%
+    saveRDS("./fitted_models/01.1/post_1.rds")
+  diag_1 %>%
+    saveRDS("./fitted_models/01.1/diag_1.rds")
+```
+
+We import the posterior samples (`post_1`), posterior diagnostics (`diag_1`), and stochastic parameters (`param_1`). 
+
+```{r}
+# Import posterior draws and parameter values
+  post_1 <- readRDS("./fitted_models/01.1/post_1.rds")
+  param_1 <- readRDS("./sim_data/01/param_1.rds")
+  diag_1 <- readRDS("./fitted_models/01.1/diag_1.rds")
+```
+
+## Theta and gamma
+
+In this section, we plot the estimated varying effects $\theta_{[a, b, k]}$ and $\Gamma_{[a, b, k, l]}$ and compare to the target values from the generative model.
+
+We define the dyads under scrutiny:
+
+```{r}
+# Iteration of the generative model
+iteration <- 1
+
+# Sample 10 dyads
+set.seed(3666)
+dyads <- sample(1:180, 10, replace = FALSE)
+
+# These dyads are sampled across all four groups
+grp_nbs <- 1:4
+
+# Rename and import relevant objects
+post <- post_1
+data <- readRDS("./sim_data/01/d_1.rds")
+parameters <- param_1
+```
+
+
+And run the function:
+
+```{r, warning=FALSE, message=FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 6
+#| fig-height: 9
+naive_estimates <- tibble(
+  dyad = data[[iteration]]$D_dyad,
+  s = data[[iteration]]$D_s,
+  param = paste0("theta[", dyad, ",", s ,"]"),
+  value = data[[iteration]]$D_exposure / data[[iteration]]$D_events
+) %>%
+  filter(dyad %in% dyads)
+
+p1 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("theta[", dyads, ",1]"))) %>%
+  gather(param, value, 1:ncol(.)) %>%
+  mutate(value = value / (60 * 12)),
+  true_values = tibble(
+        param = paste0("theta[", dyads, ",1]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$theta[, 1]) %>%
+  unlist() %>%
+  magrittr::extract(dyads) / (60 * 12)
+        ),
+  naive_values = naive_estimates %>% filter(s == 1) %>%
+  mutate(value = value / (60 * 12)),
+  double_bounded = 0,
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p2 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("theta[", dyads, ",2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("theta[", dyads, ",2]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$theta[, 2]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+    naive_values = naive_estimates %>% filter(s == 2)  %>%
+  mutate(value = ifelse(value > 30, Inf, value)),
+  double_bounded = 0,
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p3 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("theta[", dyads, ",3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("theta[", dyads, ",3]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$theta[, 3]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+    naive_values = naive_estimates %>% filter(s == 3) %>%
+  mutate(value = ifelse(value > 30, Inf, value)),
+  double_bounded = 0,
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p4 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("theta[", dyads, ",4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("theta[", dyads, ",4]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$theta[, 4]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  double_bounded = 0,
+  naive_values = naive_estimates %>% filter(s == 4) %>%
+  mutate(value = ifelse(value > 30, Inf, value)),
+  max = 30
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+
+naive_estimates <- tibble(
+  dyad = data[[iteration]]$C_dyad,
+  s_from = data[[iteration]]$C_s_from,
+  s_to = data[[iteration]]$C_s_to,
+) %>%
+  group_by(dyad, s_from, s_to) %>%
+  summarise(count = n()) %>%
+  right_join(expand.grid(
+  dyad = dyads,
+  s_from = 1:4,
+  s_to = 1:4)
+) %>%
+  arrange(dyad, s_from, s_to) %>%
+  mutate(count = replace_na(count, 0)) %>%
+  group_by(dyad, s_from) %>%
+  mutate(tot_count = sum(count),
+         count = if_else(tot_count == 0, NA_real_, count),
+         param = paste0("Gamma[", dyad, ",", s_from, ",", s_to, "]")) %>%
+  group_by(dyad, s_from) %>%
+  mutate(value = count / sum(count))
+
+p5 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",1,2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",1,2]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[1, 2, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 1 & s_to == 2),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p6 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",1,3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",1,3]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[1, 3, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 1 & s_to == 3),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p7 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",1,4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",1,4]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[1, 4, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 1 & s_to == 4),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p8 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",2,1]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",2,1]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[2, 1, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 2 & s_to == 1),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p9 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",2,3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",2,3]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[2, 3, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 2 & s_to == 3),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p10 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",2,4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",2,4]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[2, 4, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 2 & s_to == 4),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p11 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",3,1]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",3,1]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[3, 1, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 3 & s_to == 1),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p12 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",3,2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",3,2]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[3, 2, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 3 & s_to == 2),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p13 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",3,4]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",3,4]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[3, 4, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 3 & s_to == 4),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p14 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",4,1]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",4,1]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[4, 1, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 4 & s_to == 1),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p15 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",4,2]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",4,2]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[4, 2, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 4 & s_to == 2),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p16 <- plot_interval(
+  draws = post %>%
+    filter(iter == iteration) %>%
+  select(all_of(paste0("Gamma[", dyads, ",4,3]"))) %>%
+  gather(param, value, 1:ncol(.)),
+  true_values = tibble(
+        param = paste0("Gamma[", dyads, ",4,3]"),
+        value = lapply(grp_nbs, function(g) parameters[[iteration]][[g]]$Gamma[4, 3, ]) %>%
+  unlist() %>%
+  magrittr::extract(dyads)
+        ),
+  naive_values = naive_estimates %>% filter(s_from == 4 & s_to == 3),
+  double_bounded = 1,
+  max = 1
+) +
+  theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+ep <- plot_spacer()
+wrap_plots(p1, p2, p3, p4,
+           ep, p5, p6, p7,
+           p8, ep, p8, p10,
+           p11, p12, ep, p13,
+           p14, p15, p16, ep,
+           ncol = 4)
+```
+
+
+## Averages over dyads
+
+Below, we average $\theta$ and $\Gamma$ over the three groups for a number of iterations, then average over all the previous iterations.
+By doing so, we compute the population averages for holding times and transition probabilities.
+
+```{r, eval = FALSE}
+n_iter <- 1e3
+param_test <- list()
+mean_per_dataset <- list()
+cum_avg <- list()
+
+for(i in 1:n_iter){
+param_test[[i]] <- list()
+param_test[[i]] <- stochastic_param(N_ind_vec = c(10, 10, 10, 10))
+
+
+mean_per_dataset[[i]] <- tibble(
+       # Holding times
+       "1" = sapply(param_test[[i]], function(x) x$theta[,1]) %>% c() %>% mean(),
+       "2" = sapply(param_test[[i]], function(x) x$theta[,2]) %>% c() %>% mean(),
+       "3" = sapply(param_test[[i]], function(x) x$theta[,3]) %>% c() %>% mean(),
+       "1_2" = sapply(param_test[[i]], function(x) x$Gamma[1,2,]) %>% c() %>% mean(),
+       
+       # Transition proba
+       "1_3" = sapply(param_test[[i]], function(x) x$Gamma[1,3,]) %>% c() %>% mean() +
+               sapply(param_test[[i]], function(x) x$Gamma[1,4,]) %>% c() %>% mean(),
+       "2_1" = sapply(param_test[[i]], function(x) x$Gamma[2,1,]) %>% c() %>% mean(),
+       "2_3" = sapply(param_test[[i]], function(x) x$Gamma[2,3,]) %>% c() %>% mean() +
+               sapply(param_test[[i]], function(x) x$Gamma[2,4,]) %>% c() %>% mean(),
+       "3_1" = sapply(param_test[[i]], function(x) x$Gamma[3,1,]) %>% c() %>% mean(),
+       "3_2" = sapply(param_test[[i]], function(x) x$Gamma[3,2,]) %>% c() %>% mean(),
+       "3_3" = sapply(param_test[[i]], function(x) x$Gamma[3,4,]) %>% c() %>% mean()
+       ) 
+cum_avg[[i]] <- mean_per_dataset %>% 
+  bind_rows() %>%
+  summarise(across(everything(), mean))
+}
+
+param_avg <- cum_avg %>% bind_rows() 
+param_avg %>% saveRDS("./sim_data/01/param_avg.rds")
+```
+
+
+We plot the averages over all previous iterations.
+
+```{r}
+param_avg <- readRDS("./sim_data/01/param_avg.rds")
+
+param_avg %>%
+  rename("avg_theta[1]" = `1` ,
+         "avg_theta[2]" = `2`,
+         "avg_theta[gr]" =  `3`,
+         "avg_gamma[1>2]" = `1_2`,
+         "avg_gamma[1>gr]" = `1_3`,
+         "avg_gamma[2>1]" = `2_1`,
+         "avg_gamma[2>gr]" = `2_3`,
+         "avg_gamma[gr>1]" = `3_1`,
+         "avg_gamma[gr>2]" = `3_2`,
+         "avg_gamma[gr>gr]" = `3_3`) %>%
+  mutate(iter = 1:nrow(.)) %>%
+  gather(param, value, 1:(ncol(.)-1)) %>%
+  ggplot(aes(x = iter, y = value)) +
+  facet_wrap(~ param, scale = "free") +
+  
+  geom_line(color = "#960e20") +
+  theme_light() +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(color = "black"),
+        axis.title = element_blank(),
+        panel.grid = element_blank()) +
+  scale_x_continuous(breaks = c(0, 1e3))
+```
+
+We compare these averages (corresponding to the true population expectations) to the posterior estimates.
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show code:"
+param_avg <- readRDS("./sim_data/01/param_avg.rds")
+
+p1 <- post %>%
+  select(`avg_theta[1]`, iter) %>%
+  mutate(value = `avg_theta[1]` / (60 * 12)) %>%
+post_plot_2(
+min = 0,
+max = 13,
+target_data = (param_avg %>% pull("1") %>% last()) / (60 * 12),
+lower_bound = 1,
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p2 <- post %>%
+  select(value = `avg_theta[2]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 13,
+target_data = (param_avg %>% pull("2") %>% last()),
+lower_bound = 1,
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p3 <- post %>%
+  select(value = `avg_theta[3]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 13,
+target_data = (param_avg %>% pull("3") %>% last()),
+lower_bound = 1,
+) + theme(plot.margin = unit(c(0.1, 0.1, 2.2, 0.1), "cm"))
+
+p4 <- post %>%
+  select(value = `avg_Gamma[1,2]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 1,
+target_data = (param_avg %>% pull("1_2") %>% last()),
+lower_bound = 1,
+upper_bound = 1
+) + theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm")) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+
+p5 <- post %>%
+  select(value = `avg_Gamma[1,3]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 1,
+target_data = (param_avg %>% pull("1_3") %>% last()),
+lower_bound = 1,
+upper_bound = 1
+) + theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm")) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p6 <- post %>%
+  select(value = `avg_Gamma[2,1]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 1,
+target_data = (param_avg %>% pull("2_1") %>% last()),
+lower_bound = 1,
+upper_bound = 1
+) + theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm")) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p7 <- post %>%
+  select(value = `avg_Gamma[2,3]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 1,
+target_data = (param_avg %>% pull("2_3") %>% last()),
+lower_bound = 1,
+upper_bound = 1
+) + theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm")) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p8 <- post %>%
+  select(value = `avg_Gamma[3,1]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 1,
+target_data = (param_avg %>% pull("3_1") %>% last()),
+lower_bound = 1,
+upper_bound = 1
+) + theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p9 <- post %>%
+  select(value = `avg_Gamma[3,2]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 1,
+target_data = (param_avg %>% pull("3_2") %>% last()),
+lower_bound = 1,
+upper_bound = 1
+) + theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+p10 <- post %>%
+  select(value = `avg_Gamma[3,3]`, iter) %>%
+post_plot_2(
+min = 0,
+max = 1,
+target_data = (param_avg %>% pull("3_3") %>% last()),
+lower_bound = 1,
+upper_bound = 1
+) + theme(plot.margin = unit(c(0.4, 0.1, 0.5, 0.1), "cm"))
+
+(p1 + p2 + p3) /
+(plot_spacer() + p4 + p5) /
+(p6 + plot_spacer() + p7) /
+(p8 + p9 + p10)
+```
+
+
+## Posterior predictions
+
+In this section, we compare the distribution of synthetic observations (output of `sim`) to posterior predictive distributions (`post`).
+
+### Holding times
+
+```{r, message=FALSE}
+  d_1 <- readRDS("./sim_data/01/d_1.rds")
+
+# Observed holding times for j in {1, ..., J}
+  obs_ht <- tibble(
+    dyad = d_1[[1]]$B_dyad,
+    s = d_1[[1]]$B_s,
+    x = d_1[[1]]$B_x,
+    c = d_1[[1]]$B_c
+  )
+
+# theta posterior samples
+thetas <- post_1 %>%
+  filter(iter == 1) %>%
+  select(starts_with("theta[")) %>% 
+  slice(1:30) %>%
+  mutate(sample = 1:nrow(.)) %>%
+  gather(param, value, 1:(ncol(.) - 1)) %>%
+  extract(param, into = c("dyad", "s"), regex = "theta\\[(\\d+),(\\d+)\\]", convert = TRUE)
+
+# For each observed holding time
+post_pred_x <- list()
+for (spl in 1:30) {
+  post_pred_x[[spl]] <- obs_ht %>%
+    select(-x) %>%
+    left_join(thetas %>% filter(sample == spl)) %>%
+    mutate(x = rexp(nrow(.), 1 / value)) %>%
+    filter(x <= 40)
+}
+```
+
+For each posterior, and for each observed sojourn in a given state, we draw a posterior prediction.
+We then only keep sojourns smaller than 40 minutes.
+
+```{r, warning=FALSE}
+# We bin the observed holding times for plotting
+pp_x_tbl <- post_pred_x %>%
+  bind_rows() %>%
+  # Binning sequence
+  mutate(bin = sapply(x, function(val)
+    seq(2.5, 37.5, by = 5)[which.min(abs(seq(2.5, 37.5, by = 5) - val))])) %>%
+  group_by(s, sample, bin) %>%
+  summarise(count = n()) %>%
+  group_by(s, sample) %>%
+  # Fill in the zeros
+  complete(bin = seq(2.5, 37.5, by = 5), fill = list(count = 0)) %>%
+  ungroup()
+
+p1 <- obs_ht %>% filter(s == 1 & c == 0) %>%
+hist_plot(
+    colbin = "#c9c7bd",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 1),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#c9c7bd"
+  )
+
+p2 <- obs_ht %>% filter(s == 2 & c %in% c(0, 1)) %>%
+hist_plot(
+    colbin = "#E9C4C1",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 2),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#d1a7a3"
+  )
+
+p3 <- obs_ht %>% filter(s == 3 & c %in% c(0, 1)) %>%
+hist_plot(
+    colbin = "#ce8da6",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 3),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#a37184"
+  )
+
+p4 <- obs_ht %>% filter(s == 4 & c %in% c(0, 1)) %>%
+hist_plot(
+    colbin = "#996282",
+    posterior = 1,
+    post_data = pp_x_tbl %>%
+      filter(s == 4),
+    alpha_point = 0.6,
+    alpha_line = 0.4,
+    alpha_hist = 0.4,
+    col_post = "#7a4e68"
+  )
+```
+
+### Transitions
+
+```{r, warning=FALSE, message=FALSE}
+obs_tr <- tibble(
+dyad = d_1[[1]]$C_dyad,
+s_from = d_1[[1]]$C_s_from
+)
+
+# gamma posterior samples
+gammas <- post_1 %>%
+  filter(iter == 1) %>%
+  select(starts_with("Gamma[")) %>% 
+  slice(1:30) %>%
+  mutate(sample = 1:nrow(.)) %>%
+  gather(param, value, 1:(ncol(.) - 1)) %>%
+  extract(param, into = c("dyad", "s_from", "s_to"), 
+          regex = "Gamma\\[(\\d+),(\\d+),(\\d+)\\]", convert = TRUE) %>%
+  pivot_wider(names_from = s_to, 
+              values_from = value, 
+              names_prefix = "s_to_")
+
+
+post_pred_tr <- list()
+for (spl in 1:30) {
+  post_pred_tr[[spl]] <- obs_tr %>%
+  left_join(gammas %>% filter(sample == spl)) %>%
+  mutate(s_to = mapply(function(s1, s2, s3, s4) sample(1:4, size = 1, prob = c(s1, s2, s3, s4)),
+                      s_to_1, s_to_2, s_to_3, s_to_4))
+  post_pred_tr[[spl]] <- post_pred_tr[[spl]] %>%
+  group_by(s_from, s_to) %>%
+  summarise(count = n()) %>%
+    mutate(sample = spl)
+}
+
+post_pred_tr_tbl <- post_pred_tr %>%
+  bind_rows() %>%
+  mutate(s_to = as.factor(s_to))
+
+obs_tr_smry <- obs_tr %>%
+  mutate(s_to = as.factor(d_1[[1]]$C_s_to)) %>%
+  group_by(s_from, s_to) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+p5 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 1),
+  col_data = c("#E9C4C1", "#ce8da6", "#996282"),
+  col_post = c("#E9C4C1", "#ce8da6", "#996282"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 1)
+)
+
+p6 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 2),
+  col_data = c("#c9c7bd", "#ce8da6", "#996282"),
+  col_post = c("#ce8da6","#996282", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 2)
+)
+
+p7 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 3),
+  col_data = c("#c9c7bd", "#E9C4C1", "#996282"),
+  col_post = c("#E9C4C1", "#996282", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 3)
+)
+
+p8 <- binom_pmf(
+  data = obs_tr_smry %>% filter(s_from == 4),
+  col_data = c("#c9c7bd", "#E9C4C1", "#ce8da6"),
+  col_post = c("#E9C4C1", "#ce8da6", "#c9c7bd"),
+  posterior = 1,
+  post_data = post_pred_tr_tbl %>% filter(s_from == 4)
+)
+
+wrap_plots(p1, p5, p2, p6, 
+           p3, p7, p4, p8, ncol = 2)
+```
+
+# Prior predictive checks
+
+In this section, we show the prior distribution of parameters $\theta$ and $\Gamma$, and of the observables $X$.
+
+
+`m_prior` differs from `m_1` in two ways.
+First, $\theta$ and $\Gamma$ are defined as `transformed parameters`, so we get posterior samples for them.
+Second, there is no likelihood function, so the posterior distribution is nothing more than the prior distribution.
+
+
+```{r}
+# Stan model
+  (m_prior <- cmdstan_model("./stan_models/prior_core_model.stan"))
+```
+
+To obtain prior samples, we create a dummy data set, that we fit to the prior model (these data do not matter, because the model has no likelihood function). 
+
+```{r, eval=FALSE}
+# Dummy parameters
+param_priors <- stochastic_param(N_ind_vec = c(10, 10, 10, 10))
+   data_priors <- sim(N_ind_vec = c(10, 10, 10, 10),
+                      burnin = 0,
+    n_focals_vec = c(11, 11, 11, 11),
+    parameters = param_priors)
+
+# Model without likelihood
+  prior_m_1 <- m_prior$sample(
+    data = data_priors,
+    iter_warmup = 2000,
+    iter_sampling = 2000,
+    chains = 4,
+    parallel_chains = 4
+  )
+  
+# Extract posterior draws
+prior_m_1 <- prior_m_1 %>% tidy_draws()
+prior_m_1 %>% saveRDS("./fitted_models/01.1/prior_samples.rds")
+```
+
+We plot the prior distribution for $\theta$ and the prior predictive distribution of $X^{\text{true}}$.
+
+
+```{r, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 3
+# Import prior samples
+prior_samples <- readRDS("./fitted_models/01.1/prior_samples.rds") 
+
+p1.1 <- prior_samples %>%
+  # avg holding times (days)
+  mutate(theta_1_days = `theta[1,1]` / (60 * 12)) %>%
+  pull(theta_1_days) %>%
+  hist_plot_simple(fill = "#afc1c7",
+                   max = 200)
+
+p1.2 <- prior_samples %>%
+  # avg holding times (days)
+  mutate(theta_1_days = `theta[1,1]` / (60 * 12),
+         # realised holding times
+         x = rexp(n(), 1 / theta_1_days)) %>%
+  pull(x) %>%
+  hist_plot_simple(max = 200,
+                   fill = "#37606e") +
+  xlim(c(0, 200))
+    
+(p1.1 + p1.2)
+
+
+p2.1 <- prior_samples %>%
+  pull(`theta[1,2]`) %>%
+  hist_plot_simple(max = 200,
+                   fill = "#afc1c7") +
+  xlim(c(0, 200))
+
+p2.2 <- prior_samples %>%
+  mutate(# realised holding times
+         x = rexp(n(), 1 / `theta[1,2]`)) %>%
+  pull(x) %>%
+  hist_plot_simple(max = 200,
+                   fill = "#37606e") +
+  xlim(c(0, 200))
+    
+(p2.1 + p2.2)
+
+prior_samples %>%
+  pull(`Gamma[1,3,2]`) %>%
+  hist_plot_simple(max = 1,
+                   fill = "#afc1c7",
+                   linewidth = 0.5)
+```
+
