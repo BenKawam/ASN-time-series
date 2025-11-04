@@ -10,7 +10,7 @@ These notebooks are self-contained and can be run independently to reproduce eac
 
 -   [`01.1_core_model_sim`](https://htmlpreview.github.io/?https://github.com/BenKawam/ASN-time-series/blob/main/01.1_core_model_sim.html). Core generative and statistical models. Includes validation of the statistical model using the generative simulation, prior and posterior predictive checks.
 -   [`01.2_core_model_empirical`](https://htmlpreview.github.io/?https://github.com/BenKawam/ASN-time-series/blob/main/01.2_core_model_empirical.html). We update the statistical model from `01.1_core_model_sim` with empirical data. Includes computation of behavioural expectations and posterior predictive checks.
--   [`02.1_extended_model_sim`](https://htmlpreview.github.io/?https://https://github.com/BenKawam/ASN-time-series/blob/main/02.1_extended_model_sim.html). Extended generative and statistical models. Includes validation of the statistical model using the generative simulation and posterior predictive checks.
+-   [`02.1_extended_model_sim`](https://htmlpreview.github.io/?https://github.com/BenKawam/ASN-time-series/blob/main/02.1_extended_model_sim.html). Extended generative and statistical models. Includes validation of the statistical model using the generative simulation and posterior predictive checks.
 -   [`02.2_extended_model_empirical`](https://htmlpreview.github.io/?https://github.com/BenKawam/ASN-time-series/blob/main/02.2_extended_model_empirical.html). We update the statistical model from `02.1_extended_model_sim` with empirical data. Includes computation of average causal effects and posterior predictive checks.
 
 The notebooks use and produce data in the following folders:
