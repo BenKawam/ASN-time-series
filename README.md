@@ -5,7 +5,7 @@ We then develop a statistical model that takes the simulated data as input and r
 
 ## Structure of the repo
 The core of this repository consists of Quarto notebooks (`.qmd` files) that implement both the generative and inferential models.
-Each notebook can be read as an `.html` file in any web browser, or opened and executed in _R_ as a `.qmd` document.
+Each notebook can be read as an `.html` file in any web browser (see hyperlinks below), or opened and executed in _R_ as a `.qmd` document.
 These notebooks are self-contained and can be run independently to reproduce each step of the workflow.
 
 -   [`01.1_core_model_sim`](https://htmlpreview.github.io/?https://github.com/BenKawam/ASN-time-series/blob/main/01.1_core_model_sim.html). Core generative and statistical models. Includes validation of the statistical model using the generative simulation, prior and posterior predictive checks.
