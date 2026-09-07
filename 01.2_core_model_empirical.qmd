@@ -40,8 +40,14 @@ editor_options:
 
 # Empirical data
   d_tibble <- readRDS("./empirical_data/states_tibble.rds")
-  d <- readRDS("./empirical_data/d_stan_format.stan")
+  d <- readRDS("./empirical_data/d_stan_format.rds")
   
+  d_tibble$action_id <- NULL
+  d_tibble$t_iff <- NULL
+  d_tibble$action <- NULL
+  
+
+
 # Stan model
   m_1 <- cmdstan_model("./stan_models/core_model.stan")
 ```

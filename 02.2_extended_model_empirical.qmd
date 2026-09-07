@@ -38,7 +38,7 @@ editor_options:
   hist_plot_simple <- readRDS("./functions/hist_plot_simple.rds")
   
 # Empirical data
-  d <- readRDS("./empirical_data/d_stan_format.stan")
+  d <- readRDS("./empirical_data/d_stan_format.rds")
   
 # Stan model
   m_1 <- cmdstan_model("./stan_models/extended_model.stan")
