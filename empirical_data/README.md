@@ -26,16 +26,19 @@ The features of these observations are encoded by the following columns:
 ## Data object `d_stan_format.rds`
 
 This list contains both scalar values and one-dimensional containers.
-Below, we first describe the scalar values, followed by three categories of containers, each corresponding to a different data structure.
-The three data structures are combined in the original object but are presented separately here for clarity.
+Below, we first describe the scalar values, followed by four categories of containers, each corresponding to a different data structure.
+The four data structures are combined in the original object but are presented separately here for clarity.
+
+### Scalars
 
 | Variable | Description | Type |
 |---|---|---|
 | `N_dyad` | Number of dyads. | integer |
 | `N_ind` | Number of individuals. | integer |
 | `N_group` | Number of social groups. | integer |
-| `J` | Number of observations, i.e. all dyadic behavioural states $j$. | integer |
+| `J` | Number of observations, _i.e._, all dyadic behavioural state sojourns $j$. | integer |
 | `N_trans` | Number of observed state transitions. | integer |
+| `N_row_D` | `N_dyad * 4`: number of rows of data set `D`. | integer |
 
 ### Data set A
 
@@ -52,7 +55,7 @@ Each element corresponds to one dyad; they have length `N_dyad`.
 
 ### Data set B
 
-Each element corresponds to one dyadic state; they have length `J`.
+Each element corresponds to one dyadic state sojourn; they have length `J`.
 
 | Variable | Description | Type |
 |---|---|---|
@@ -64,7 +67,7 @@ Each element corresponds to one dyadic state; they have length `J`.
 
 ### Data set C
 
-Each element corresponds to one state transition; they have length `N_trans`.
+Each element corresponds to one dyadic state transition; they have length `N_trans`.
 
 | Variable | Description | Type |
 |---|---|---|
@@ -72,3 +75,15 @@ Each element corresponds to one state transition; they have length `N_trans`.
 | `C_dyad` | Dyad identifier. | integer |
 | `C_s_from` | Current state $k$ from which the transition occurs. | integer |
 | `C_s_to` | Future state $l$ to which the transition occurs. | integer |
+
+### Data set D
+
+Each element corresponds to one state (1, 2, 3, or 4) per dyad; they have length `N_row_D`.
+They allow us to compute the naive estimates that are analogous to the simple ratio index.
+
+| Variable | Description | Type |
+|---|---|---|
+| `D_dyad` | Dyad identifier. | integer |
+| `D_s` | State (1, 2, 3 or 4). | integer |
+| `D_exposure` | Amount of time in this state; _i.e._, sum of holding times of each dyad in each state. | numeric |
+| `D_events` | Number of times each dyad was observed leaving each state. | integer |
