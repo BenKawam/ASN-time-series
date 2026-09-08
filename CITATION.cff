@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below, and consider citing the published paper."
+title: "ASN-time-series: Inferring the causes of animal social network structure from time-series data"
+type: software
+authors:
+  - family-names: Kawam
+    given-names: Ben
+    orcid: "https://orcid.org/0009-0006-5779-1423"
+  - family-names: McElreath
+    given-names: Richard
+    orcid: "https://orcid.org/0000-0002-0387-5377"
+  - family-names: Ostner
+    given-names: Julia
+    orcid: "https://orcid.org/0000-0001-6871-9976"
+  - family-names: Redhead
+    given-names: Daniel
+    orcid: "https://orcid.org/0000-0002-2809-8121"
+  - family-names: Schülke
+    given-names: Oliver
+    orcid: "https://orcid.org/0000-0003-0028-9425"
+repository-code: "https://github.com/BenKawam/ASN-time-series"
+license: MIT
+preferred-citation:
+  type: article
+  title: "Inferring the causes of animal social network structure from time-series data"
+  authors:
+    - family-names: Kawam
+      given-names: Ben
+      orcid: "https://orcid.org/0009-0006-5779-1423"
+    - family-names: McElreath
+      given-names: Richard
+      orcid: "https://orcid.org/0000-0002-0387-5377"
+    - family-names: Ostner
+      given-names: Julia
+      orcid: "https://orcid.org/0000-0001-6871-9976"
+    - family-names: Redhead
+      given-names: Daniel
+      orcid: "https://orcid.org/0000-0002-2809-8121"
+    - family-names: Schülke
+      given-names: Oliver
+      orcid: "https://orcid.org/0000-0003-0028-9425"
